@@ -127,6 +127,9 @@ class SnapshotViewer {
         const saveBtn = mkBtn("\uD83D\uDCF7 Save PNG", "Save the current view as PNG into the output folder " +
             "and download it to this device", () => this.savePNG(saveBtn));
 
+        mkBtn("Open \u2197", "Open the current view as PNG in a new browser tab (nothing is saved)",
+            () => this.openInTab());
+
         this.status = document.createElement("span");
         this.status.style.cssText =
             "color:#9a9a9a;font-size:10px;pointer-events:none;max-width:100%;" +
@@ -328,19 +331,51 @@ class SnapshotViewer {
         return (w?.value || "3d/ComfyUI") + "";
     }
 
-    async savePNG(btn) {
-        if (!this.renderer || !this.modelRoot) { this.setStatus("no model loaded"); return; }
+    // Render the current view at high resolution (longest side SNAPSHOT_MAX_DIM) and
+    // return it as a PNG data URL. Renders synchronously right before capture, so the
+    // WebGL buffer is guaranteed fresh; viewport size/pixel ratio are restored after.
+    capturePNGDataURL() {
         const w = this.root.clientWidth, h = this.root.clientHeight;
         const scale = SNAPSHOT_MAX_DIM / Math.max(w, h);
+        this.renderer.setPixelRatio(1);
+        this.renderer.setSize(Math.round(w * scale), Math.round(h * scale), false);
+        this.renderer.render(this.scene, this.camera);
+        const dataURL = this.renderer.domElement.toDataURL("image/png");
+        this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+        this.renderer.setSize(w, h, false);
+        return dataURL;
+    }
+
+    // Open the current view in a new tab without saving anything. Browsers refuse
+    // top-level data: URLs, so the PNG goes through a blob URL; everything runs
+    // synchronously inside the click handler to stay clear of popup blockers.
+    openInTab() {
+        if (!this.renderer || !this.modelRoot) { this.setStatus("no model loaded"); return; }
+        try {
+            const dataURL = this.capturePNGDataURL();
+            const b64 = dataURL.split(",", 2)[1];
+            const bin = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+            const win = window.open(url, "_blank");
+            if (!win) {
+                this.setStatus("popup blocked - allow popups for this site");
+            } else {
+                this.setStatus("opened in a new tab (not saved)");
+            }
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch (e) {
+            console.error("[save3d_snapshot] open in tab failed", e);
+            this.setStatus("open failed (see console)");
+        }
+    }
+
+    async savePNG(btn) {
+        if (!this.renderer || !this.modelRoot) { this.setStatus("no model loaded"); return; }
         try {
             btn.disabled = true;
-            // hi-res offscreen-ish render: upscale, render synchronously, capture, restore
-            this.renderer.setPixelRatio(1);
-            this.renderer.setSize(Math.round(w * scale), Math.round(h * scale), false);
-            this.renderer.render(this.scene, this.camera);
-            const dataURL = this.renderer.domElement.toDataURL("image/png");
-            this.renderer.setPixelRatio(window.devicePixelRatio || 1);
-            this.renderer.setSize(w, h, false);
+            const dataURL = this.capturePNGDataURL();
 
             const resp = await api.fetchApi("/save3d_snapshot/save_png", {
                 method: "POST",
