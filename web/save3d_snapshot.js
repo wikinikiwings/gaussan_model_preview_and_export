@@ -329,18 +329,22 @@ class SnapshotViewer {
         const nearD = Math.max(D - 1.5 * r, D * 0.05);
         const farD = D + 1.5 * r;
         let m = Math.tan(THREE.MathUtils.degToRad(p.fovAbs / 2));
-        m = Math.min(m, 0.85 * halfH / (D - nearD)); // w(nearD) >= 0.15, singularity outside
-        const wN = 1 + (m / halfH) * (nearD - D);
-        const wF = 1 + (m / halfH) * (farD - D);
+        // Reverse perspective: w must DECREASE with depth (far parts divided by a
+        // smaller w -> rendered larger). The pole (w = 0) then sits BEHIND the model;
+        // clamp the slope so it stays beyond farD. (With a growing w this branch
+        // degenerates into ordinary forward perspective - the symmetric-slider bug.)
+        m = Math.min(m, 0.85 * halfH / (farD - D)); // w(farD) >= 0.15
+        const wN = 1 + (m / halfH) * (D - nearD);
+        const wF = 1 - (m / halfH) * (farD - D);
         const alpha = -(wN + wF) / (farD - nearD);
         const beta = -wN + alpha * nearD;
         const e = cam.projectionMatrix.elements; // column-major
         e[10] = alpha; // z row: z_clip = alpha * z_cam + beta
         e[14] = beta;
-        e[3] = 0;      // w row: w = a * z_cam + b, growing with depth
+        e[3] = 0;      // w row: w = a * z_cam + b, decreasing with depth
         e[7] = 0;
-        e[11] = -m / halfH;
-        e[15] = (halfH - D * m) / halfH;
+        e[11] = m / halfH;
+        e[15] = (halfH + D * m) / halfH;
         cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
     }
 
