@@ -96,7 +96,8 @@ class SnapshotViewer {
         // with that FOV. Uses dolly-zoom compensation so composition stays put.
         const sliderWrap = document.createElement("label");
         sliderWrap.title = "Perspective foreshortening: 0\u00B0 = orthographic (isometry), " +
-            "higher = stronger perspective. Framing is kept constant (dolly zoom).";
+            "positive = perspective, negative = REVERSE perspective (far parts render larger " +
+            "- compensates foreshortening baked into the model). Framing is kept constant.";
         sliderWrap.style.cssText = BTN_CSS + "pointer-events:auto;display:flex;align-items:center;" +
             "gap:5px;cursor:default;";
         this.perspLabel = document.createElement("span");
@@ -104,7 +105,7 @@ class SnapshotViewer {
         this.perspLabel.style.cssText = "min-width:52px;font-size:10px;color:#bbb;";
         this.perspSlider = document.createElement("input");
         this.perspSlider.type = "range";
-        this.perspSlider.min = "0";
+        this.perspSlider.min = "-60";
         this.perspSlider.max = "60";
         this.perspSlider.step = "1";
         this.perspSlider.value = "0";
@@ -176,6 +177,9 @@ class SnapshotViewer {
             if (this.disposed) return;
             requestAnimationFrame(loop);
             this.controls?.update();
+            // OrbitControls and aspect updates rebuild the ortho projection matrix,
+            // wiping the custom reverse-perspective row - reapply it every frame.
+            if (this.reverseParams) this.applyReversePerspective();
             this.renderer.render(this.scene, this.camera);
         };
         loop();
@@ -270,7 +274,8 @@ class SnapshotViewer {
         const fovDeg = this.perspFov;
         const aspect = this.root.clientWidth / Math.max(1, this.root.clientHeight);
         const radius = this.boundingSphere?.radius ?? halfH;
-        if (fovDeg <= 0.001) {
+        if (Math.abs(fovDeg) <= 0.001) {
+            this.reverseParams = null;
             this.orthoHalf = halfH;
             this.orthoCam.zoom = 1;
             const dist = Math.max(radius, halfH) * 4;
@@ -278,7 +283,8 @@ class SnapshotViewer {
             this.orthoCam.lookAt(target);
             this.updateCameraAspect(aspect);
             this.switchCamera(this.orthoCam, target);
-        } else {
+        } else if (fovDeg > 0) {
+            this.reverseParams = null;
             const dist = halfH / Math.tan(THREE.MathUtils.degToRad(fovDeg / 2));
             this.perspCam.fov = fovDeg;
             this.perspCam.near = Math.max(dist / 1000, 0.001);
@@ -287,7 +293,45 @@ class SnapshotViewer {
             this.perspCam.lookAt(target);
             this.updateCameraAspect(aspect);
             this.switchCamera(this.perspCam, target);
+        } else {
+            // Reverse perspective: orthographic camera placement + a custom projection
+            // whose frustum CONTRACTS with depth, so far parts render larger. Same
+            // half-height invariant at the target plane as the other modes.
+            this.reverseParams = { fovAbs: -fovDeg };
+            this.orthoHalf = halfH;
+            this.orthoCam.zoom = 1;
+            const dist = Math.max(radius, halfH) * 4;
+            this.orthoCam.position.copy(target).addScaledVector(dir, dist);
+            this.orthoCam.lookAt(target);
+            this.updateCameraAspect(aspect);
+            this.switchCamera(this.orthoCam, target);
+            this.applyReversePerspective();
         }
+    }
+
+    // Overwrite the ortho camera's projection so that scale grows linearly with depth
+    // (w' = a*z + b): a generalized projective matrix normalized at the target plane.
+    // The slope is clamped so the frustum never collapses within the model's bounding
+    // sphere (the singularity sits behind the model), which keeps w > 0 everywhere
+    // visible and the depth mapping monotonic.
+    applyReversePerspective() {
+        const p = this.reverseParams;
+        if (!p || !this.renderer) return;
+        const THREE = window.THREE;
+        const cam = this.orthoCam;
+        cam.updateProjectionMatrix(); // fresh ortho matrix (aspect + wheel zoom)
+        const halfH = (this.orthoHalf ?? 1) / (cam.zoom || 1);
+        const target = this.controls?.target ?? new THREE.Vector3();
+        const D = cam.position.distanceTo(target);
+        const r = this.boundingSphere?.radius ?? halfH;
+        let m = Math.tan(THREE.MathUtils.degToRad(p.fovAbs / 2));
+        m = Math.min(m, 0.9 * halfH / r);
+        const e = cam.projectionMatrix.elements; // column-major; 4th row = e[3],e[7],e[11],e[15]
+        e[3] = 0;
+        e[7] = 0;
+        e[11] = -m / halfH;
+        e[15] = (halfH - D * m) / halfH;
+        cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
     }
 
     // Re-orient the camera to the selected direction preset (elevation +-35.264deg,
@@ -339,6 +383,7 @@ class SnapshotViewer {
         const scale = SNAPSHOT_MAX_DIM / Math.max(w, h);
         this.renderer.setPixelRatio(1);
         this.renderer.setSize(Math.round(w * scale), Math.round(h * scale), false);
+        if (this.reverseParams) this.applyReversePerspective();
         this.renderer.render(this.scene, this.camera);
         const dataURL = this.renderer.domElement.toDataURL("image/png");
         this.renderer.setPixelRatio(window.devicePixelRatio || 1);
