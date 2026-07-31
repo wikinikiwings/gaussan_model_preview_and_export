@@ -78,7 +78,7 @@ class SnapshotViewer {
         ];
         this.isoSelect = document.createElement("select");
         this.isoSelect.title = "View direction: yaw quadrant, \u2191 from above / \u2193 from below " +
-            "(elevation 35.26\u00B0)";
+            "(elevation 35.26\u00B0). Switching keeps the current pan/scale/foreshortening.";
         this.isoSelect.style.cssText = BTN_CSS + "pointer-events:auto;";
         for (const [label] of this.isoPresets) {
             const o = document.createElement("option");
@@ -89,7 +89,8 @@ class SnapshotViewer {
         this.isoSelect.addEventListener("change", () => this.applyPreset());
         bar.appendChild(this.isoSelect);
 
-        mkBtn("Frame", "Re-frame the model from the selected direction preset", () => this.applyPreset());
+        mkBtn("Frame", "Reset the composition: center the model and fit it to the view " +
+            "from the selected direction", () => this.applyPreset(true));
 
         // Foreshortening slider: 0deg = orthographic (true isometry), >0deg = perspective
         // with that FOV. Uses dolly-zoom compensation so composition stays put.
@@ -232,7 +233,7 @@ class SnapshotViewer {
             this.scene.add(this.modelRoot);
             const box = new window.THREE.Box3().setFromObject(this.modelRoot);
             this.boundingSphere = box.getBoundingSphere(new window.THREE.Sphere());
-            this.applyPreset();
+            this.applyPreset(true);
             this.setStatus(fileInfo?.filename || "");
         }, undefined, (err) => {
             console.error("[save3d_snapshot] load error", err);
@@ -286,9 +287,13 @@ class SnapshotViewer {
         }
     }
 
-    // Re-frame the model from the selected direction preset (elevation +-35.264deg,
+    // Re-orient the camera to the selected direction preset (elevation +-35.264deg,
     // yaw quadrant), projection per the Persp slider.
-    applyPreset() {
+    // reframe=false (preset switching): carry the current composition over - keep the
+    // orbit target (pan) and the view scale, only the direction changes.
+    // reframe=true (Frame button / model load): reset composition - center on the
+    // model and fit it to the view.
+    applyPreset(reframe = false) {
         if (!this.boundingSphere) { this.setStatus("no model loaded"); return; }
         const THREE = window.THREE;
         const s = this.boundingSphere;
@@ -300,7 +305,11 @@ class SnapshotViewer {
             Math.sin(elev),
             Math.cos(elev) * Math.cos(yaw),
         ).normalize();
-        this.placeCamera(dir, s.center.clone(), s.radius * 1.15);
+        if (reframe || !this.controls) {
+            this.placeCamera(dir, s.center.clone(), s.radius * 1.15);
+        } else {
+            this.placeCamera(dir, this.controls.target.clone(), this.currentHalfHeight());
+        }
     }
 
     // Live foreshortening change: keep the current view direction, target and framing,
