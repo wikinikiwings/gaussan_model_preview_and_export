@@ -311,23 +311,33 @@ class SnapshotViewer {
 
     // Overwrite the ortho camera's projection so that scale grows linearly with depth
     // (w' = a*z + b): a generalized projective matrix normalized at the target plane.
-    // The slope is clamped so the frustum never collapses within the model's bounding
-    // sphere (the singularity sits behind the model), which keeps w > 0 everywhere
-    // visible and the depth mapping monotonic.
+    // Both the w-row AND the z-row must be rebuilt together: keeping the ortho z-row
+    // while dividing by a depth-varying w flips the sign of d(z_ndc)/d(depth), which
+    // inverts the depth test and renders the model "inside out". The z-row below is
+    // solved so that z_ndc maps nearD -> -1, farD -> +1 monotonically, and the slope
+    // clamp keeps w > 0 across [nearD, farD] (no pole inside the clip range).
     applyReversePerspective() {
         const p = this.reverseParams;
         if (!p || !this.renderer) return;
         const THREE = window.THREE;
         const cam = this.orthoCam;
-        cam.updateProjectionMatrix(); // fresh ortho matrix (aspect + wheel zoom)
+        cam.updateProjectionMatrix(); // fresh ortho x/y rows (aspect + wheel zoom)
         const halfH = (this.orthoHalf ?? 1) / (cam.zoom || 1);
         const target = this.controls?.target ?? new THREE.Vector3();
         const D = cam.position.distanceTo(target);
         const r = this.boundingSphere?.radius ?? halfH;
+        const nearD = Math.max(D - 1.5 * r, D * 0.05);
+        const farD = D + 1.5 * r;
         let m = Math.tan(THREE.MathUtils.degToRad(p.fovAbs / 2));
-        m = Math.min(m, 0.9 * halfH / r);
-        const e = cam.projectionMatrix.elements; // column-major; 4th row = e[3],e[7],e[11],e[15]
-        e[3] = 0;
+        m = Math.min(m, 0.85 * halfH / (D - nearD)); // w(nearD) >= 0.15, singularity outside
+        const wN = 1 + (m / halfH) * (nearD - D);
+        const wF = 1 + (m / halfH) * (farD - D);
+        const alpha = -(wN + wF) / (farD - nearD);
+        const beta = -wN + alpha * nearD;
+        const e = cam.projectionMatrix.elements; // column-major
+        e[10] = alpha; // z row: z_clip = alpha * z_cam + beta
+        e[14] = beta;
+        e[3] = 0;      // w row: w = a * z_cam + b, growing with depth
         e[7] = 0;
         e[11] = -m / halfH;
         e[15] = (halfH - D * m) / halfH;
