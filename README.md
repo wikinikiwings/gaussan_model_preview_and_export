@@ -8,15 +8,16 @@ Built for gaussian-splat pipelines (e.g. TripoSplat → `SplatToMesh` → this n
 - Saves the input mesh / 3D file to the output folder exactly like the builtin SaveGLB
   (same helpers, same filename prefix + counter).
 - Own interactive viewport (three.js, OrbitControls) that stretches with the node.
-- **8 isometric presets** — 4 yaw quadrants (45°/135°/225°/315°) × view from above/below,
-  true isometry: orthographic projection, elevation ±35.264° (arctan 1/√2), auto-framed
-  to the model bounding sphere.
-- **Perspective** reset (3/4 view).
-- **Save PNG** — renders the current view at high resolution (longest side 2048 px) and
-  stores it into the ComfyUI output folder with the same prefix/counter as the GLB.
-- **BG toggle** — dark or transparent background (PNG keeps alpha).
-- **⇩ DL toggle** — additionally download the PNG to the user's device via the browser,
-  with the same filename the server assigned.
+- **8 view-direction presets** — 4 yaw quadrants (45°/135°/225°/315°) × view from above/below,
+  elevation ±35.264° (arctan 1/√2), auto-framed to the model bounding sphere.
+- **Perspective foreshortening slider (0–60°)** — 0° is a true orthographic isometry,
+  higher values switch to a perspective projection with that FOV. Works live on the
+  current view with dolly-zoom compensation, so direction, target and framing stay put
+  while only the foreshortening changes.
+- **Save PNG** — renders the current view at high resolution (longest side 2048 px),
+  stores it into the ComfyUI output folder with the same prefix/counter as the GLB and
+  downloads a copy to the user's device with the same filename.
+- **BG toggle** — transparent (default, PNG keeps alpha) or dark background.
 
 ## Install
 
@@ -31,8 +32,9 @@ three.js (r147, MIT license) is vendored under `web/lib/` — no runtime CDN dep
 ## Usage
 
 Add **Save 3D Model (Snapshot)** (category `3d`), feed it a mesh (e.g. the `mesh` output
-of `SplatToMesh`), run the workflow. The model loads into the viewport; pick an isometric
-preset or orbit freely, then hit **Save PNG**.
+of `SplatToMesh`), run the workflow. The model loads into the viewport already framed
+from the selected direction preset; orbit freely, dial in the foreshortening, then hit
+**Save PNG**.
 
 ## Notes / limitations
 
