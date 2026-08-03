@@ -243,6 +243,9 @@ class SnapshotViewer {
             this.controls?.dispose();
             this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
             this.controls.enableDamping = true;
+            // Report the camera after every manual orbit/zoom/pan so the node's
+            // camera_info output always matches what the user sees.
+            this.controls.addEventListener("end", () => this.updateCameraState());
         }
         this.controls.target.copy(t);
         this.controls.update();
@@ -333,6 +336,38 @@ class SnapshotViewer {
             this.switchCamera(this.orthoCam, target);
             this.applyReversePerspective();
         }
+        this.updateCameraState();
+    }
+
+    // Serialize the current view into the hidden `camera_state` widget, which the Python
+    // side turns into the node's camera_info output (for RenderSplat and friends).
+    // Coordinates are three.js world space - exactly what camera_info expects, so no
+    // conversion is needed here. The exported distance is normalized to the framing
+    // invariant (halfHeight / tan(fov/2)) so the server reproduces this exact frame.
+    // Note: RenderSplat knows perspective and orthographic only, so a negative
+    // (reverse-perspective) slider value is exported as orthographic.
+    updateCameraState() {
+        const w = this.node.widgets?.find((x) => x.name === "camera_state");
+        if (!w || !this.camera || !this.controls) return;
+        const THREE = window.THREE;
+        const target = this.controls.target.clone();
+        const dir = this.camera.position.clone().sub(target);
+        if (dir.lengthSq() < 1e-12) dir.set(1, 1, 1);
+        dir.normalize();
+        const persp = this.perspFov > 0.001;
+        const fov = persp ? this.perspFov : 35;
+        const dist = this.currentHalfHeight() / Math.tan(THREE.MathUtils.degToRad(fov / 2));
+        const pos = target.clone().addScaledVector(dir, dist);
+        const q = this.camera.quaternion;
+        const xyz = (v) => ({ x: v.x, y: v.y, z: v.z });
+        w.value = JSON.stringify({
+            position: xyz(pos),
+            target: xyz(target),
+            quaternion: { x: q.x, y: q.y, z: q.z, w: q.w },
+            fov,
+            cameraType: persp ? "perspective" : "orthographic",
+            zoom: 1,
+        });
     }
 
     // Overwrite the ortho camera's projection so that scale grows linearly with depth
@@ -528,6 +563,18 @@ app.registerExtension({
             });
             viewer.init();
             this.setSize([Math.max(this.size[0], 380), Math.max(this.size[1], 460)]);
+
+            // `camera_state` is machinery, not a user control: the viewport writes the
+            // current camera into it and Python turns it into the camera_info output.
+            // Hide it from the node body (type "hidden" stops it being drawn, the zero
+            // computeSize stops it reserving a row) while keeping it serialized, so the
+            // framing survives page reloads and travels with the workflow JSON.
+            const camWidget = this.widgets?.find((w) => w.name === "camera_state");
+            if (camWidget) {
+                camWidget.type = "hidden";
+                camWidget.hidden = true;
+                camWidget.computeSize = () => [0, -4];
+            }
 
             // Never allow the node to get narrower than the viewport's practical minimum.
             // setSize() always routes through onResize with the live size array, so

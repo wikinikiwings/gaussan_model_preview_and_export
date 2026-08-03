@@ -11,6 +11,7 @@ The GLB saving logic is reused from comfy_extras.nodes_save_3d (SaveGLB).
 import base64
 import json
 import logging
+import math
 import os
 
 from typing_extensions import override
@@ -25,6 +26,76 @@ from PIL import Image
 from server import PromptServer
 
 WEB_DIRECTORY = "./web"
+
+ISO_ELEV_DEG = 35.264389682754654  # atan(1/sqrt(2)): classic isometric elevation
+DEFAULT_FOV = 35.0
+
+
+def _xyz(d, default=(0.0, 0.0, 0.0)):
+    if not isinstance(d, dict):
+        d = {}
+    return {"x": float(d.get("x", default[0])),
+            "y": float(d.get("y", default[1])),
+            "z": float(d.get("z", default[2]))}
+
+
+def _fallback_camera_info(mesh):
+    """Isometric camera framing the mesh, for runs where the viewport never reported one
+    (API / headless). Same convention as the JS viewport: yaw 45 deg, elevation
+    atan(1/sqrt2), orthographic, fitted to the bounding sphere. No quaternion is emitted -
+    RenderSplat derives a roll-free basis from position/target in that case.
+    """
+    center = [0.0, 0.0, 0.0]
+    radius = 1.0
+    verts = getattr(mesh, "vertices", None)
+    try:
+        if verts is not None and verts.numel():
+            v = verts.reshape(-1, 3).float()
+            lo, hi = v.amin(dim=0), v.amax(dim=0)
+            c = (lo + hi) / 2
+            center = [float(c[0]), float(c[1]), float(c[2])]
+            radius = max(float((hi - lo).norm() / 2), 1e-6)
+    except Exception:  # noqa: BLE001 - bounds are a convenience, never fatal
+        logging.debug("SaveGLBSnapshot: could not derive mesh bounds for the default camera")
+    half_h = radius * 1.15
+    dist = half_h / math.tan(math.radians(DEFAULT_FOV / 2))
+    yaw, elev = math.radians(45.0), math.radians(ISO_ELEV_DEG)
+    d = [math.cos(elev) * math.sin(yaw), math.sin(elev), math.cos(elev) * math.cos(yaw)]
+    return {
+        "position": {"x": center[0] + d[0] * dist,
+                     "y": center[1] + d[1] * dist,
+                     "z": center[2] + d[2] * dist},
+        "target": {"x": center[0], "y": center[1], "z": center[2]},
+        "fov": DEFAULT_FOV, "cameraType": "orthographic", "zoom": 1.0,
+    }
+
+
+def _camera_info_from_state(camera_state: str, mesh):
+    """Convert the viewport's reported camera (JSON from the JS widget) into a camera_info
+    dict for RenderSplat. Coordinates need no conversion: camera_info is in the viewer's
+    three.js world space (right-handed, Y-up) and RenderSplat maps it to the splat frame
+    itself. The viewport keeps the framing invariant, so `position` already sits at
+    distance halfHeight / tan(fov/2) from the target.
+    """
+    if camera_state:
+        try:
+            s = json.loads(camera_state)
+            info = {
+                "position": _xyz(s.get("position")),
+                "target": _xyz(s.get("target")),
+                "fov": float(s.get("fov", DEFAULT_FOV)),
+                "cameraType": ("orthographic" if str(s.get("cameraType")) == "orthographic"
+                               else "perspective"),
+                "zoom": float(s.get("zoom") or 1.0),
+            }
+            q = s.get("quaternion")
+            if isinstance(q, dict):
+                info["quaternion"] = {"x": float(q.get("x", 0.0)), "y": float(q.get("y", 0.0)),
+                                      "z": float(q.get("z", 0.0)), "w": float(q.get("w", 1.0))}
+            return info
+        except Exception:  # noqa: BLE001
+            logging.exception("SaveGLBSnapshot: unusable camera_state, using the default isometric camera")
+    return _fallback_camera_info(mesh)
 
 
 class SaveGLBSnapshot(IO.ComfyNode):
@@ -60,12 +131,18 @@ class SaveGLBSnapshot(IO.ComfyNode):
                     tooltip="Mesh or 3D file to save",
                 ),
                 IO.String.Input("filename_prefix", default="3d/ComfyUI"),
+                IO.String.Input("camera_state", default="",
+                                tooltip="Camera of the node's viewport, filled in automatically by its UI "
+                                        "(hidden). Drives the camera_info output; when empty a default "
+                                        "isometric camera fitted to the mesh is used."),
             ],
+            outputs=[IO.Load3DCamera.Output(display_name="camera_info")],
             hidden=[IO.Hidden.prompt, IO.Hidden.extra_pnginfo],
         )
 
     @classmethod
-    def execute(cls, mesh: Types.MESH | Types.File3D, filename_prefix: str) -> IO.NodeOutput:
+    def execute(cls, mesh: Types.MESH | Types.File3D, filename_prefix: str,
+                camera_state: str = "") -> IO.NodeOutput:
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(
             filename_prefix, folder_paths.get_output_directory())
         results = []
@@ -107,7 +184,8 @@ class SaveGLBSnapshot(IO.ComfyNode):
                 results.append({"filename": f, "subfolder": subfolder, "type": "output"})
                 counter += 1
         # Custom ui key so the builtin 3d preview does not attach; our JS widget consumes it.
-        return IO.NodeOutput(ui={"snapshot3d": results})
+        return IO.NodeOutput(_camera_info_from_state(camera_state, mesh),
+                             ui={"snapshot3d": results})
 
 
 @PromptServer.instance.routes.post("/save3d_snapshot/save_png")
