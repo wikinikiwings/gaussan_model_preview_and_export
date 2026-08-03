@@ -45,6 +45,7 @@ class SnapshotViewer {
         this.downloadToo = true; // always also download the PNG to the user's device
         this.modelRoot = null;
         this.boundingSphere = null;
+        this.everFramed = false; // has a model ever been framed in this session?
 
         this.root = document.createElement("div");
         this.root.style.cssText =
@@ -268,8 +269,19 @@ class SnapshotViewer {
             });
             this.scene.add(this.modelRoot);
             const box = new window.THREE.Box3().setFromObject(this.modelRoot);
+            const prev = this.boundingSphere;
             this.boundingSphere = box.getBoundingSphere(new window.THREE.Sphere());
-            this.applyPreset(true);
+            // Keep the user's shot across re-runs. Only reframe when there is nothing to
+            // preserve: first model of the session (unless the workflow carried a camera)
+            // or a model whose bounds differ enough that the old framing would miss it.
+            if (!this.everFramed && this.restoreFromWidget()) {
+                this.setStatus("restored framing from the workflow");
+            } else if (this.controls && prev && this.boundsComparable(prev, this.boundingSphere)) {
+                this.setPerspectiveAmount(); // re-place the camera, same direction/target/scale
+            } else {
+                this.applyPreset(true);
+            }
+            this.everFramed = true;
             this.setStatus(fileInfo?.filename || "");
         }, undefined, (err) => {
             console.error("[save3d_snapshot] load error", err);
@@ -339,6 +351,53 @@ class SnapshotViewer {
         this.updateCameraState();
     }
 
+    // Two models are "the same shot" if the old framing still contains the new one:
+    // centers within a radius of each other and a scale ratio inside 0.5x..2x.
+    boundsComparable(a, b) {
+        const ra = Math.max(a.radius, 1e-6);
+        const rb = Math.max(b.radius, 1e-6);
+        const ratio = rb / ra;
+        return a.center.distanceTo(b.center) <= Math.max(ra, rb) && ratio > 0.5 && ratio < 2;
+    }
+
+    // Rebuild the view from the serialized `camera_state`, so a framing set up before a
+    // page reload (or saved in the workflow JSON) is restored on the next run instead of
+    // being reset. Returns false when there is nothing usable to restore.
+    restoreFromWidget() {
+        const w = this.node.widgets?.find((x) => x.name === "camera_state");
+        if (!w?.value) return false;
+        try {
+            const THREE = window.THREE;
+            const s = JSON.parse(w.value);
+            if (!s?.position || !s?.target) return false;
+            const pos = new THREE.Vector3(s.position.x, s.position.y, s.position.z);
+            const target = new THREE.Vector3(s.target.x, s.target.y, s.target.z);
+            const dir = pos.clone().sub(target);
+            const dist = dir.length();
+            if (!(dist > 1e-6)) return false;
+            dir.divideScalar(dist);
+            // Inverse of the export: distance was normalized to halfH / tan(fov/2).
+            const fovExported = Number(s.fov) || 35;
+            const halfH = Math.tan(THREE.MathUtils.degToRad(fovExported / 2)) * dist;
+            if (!(halfH > 1e-6)) return false;
+            const yawDeg = Number(s.viewer?.yawDeg);
+            if (Number.isFinite(yawDeg)) {
+                this.yawDeg = ((yawDeg % 360) + 360) % 360;
+                this.yawLabel.textContent = `Yaw ${this.yawDeg}\u00B0`;
+            }
+            const persp = Number(s.viewer?.persp);
+            const fallbackPersp = s.cameraType === "perspective" ? fovExported : 0;
+            const value = Math.max(-60, Math.min(60, Number.isFinite(persp) ? persp : fallbackPersp));
+            this.perspSlider.value = String(value);
+            this.perspLabel.textContent = `Persp ${value}\u00B0`;
+            this.placeCamera(dir, target, halfH);
+            return true;
+        } catch (e) {
+            console.warn("[save3d_snapshot] could not restore camera_state", e);
+            return false;
+        }
+    }
+
     // Serialize the current view into the hidden `camera_state` widget, which the Python
     // side turns into the node's camera_info output (for RenderSplat and friends).
     // Coordinates are three.js world space - exactly what camera_info expects, so no
@@ -367,6 +426,9 @@ class SnapshotViewer {
             fov,
             cameraType: persp ? "perspective" : "orthographic",
             zoom: 1,
+            // Viewer-only extras (ignored by the Python side) so the exact toolbar state
+            // can be restored, including negative (reverse-perspective) values.
+            viewer: { yawDeg: this.yawDeg, persp: this.perspFov },
         });
     }
 
