@@ -69,28 +69,36 @@ class SnapshotViewer {
             return b;
         };
 
-        // 8 direction presets: 4 yaw quadrants x view from above/below.
-        // Elevation is always the true-isometric 35.26deg (arctan 1/sqrt2); whether the
+        // View direction: yaw slider around the Y axis, 8 detents (45deg steps), always
+        // with the classic isometric elevation +35.26deg (arctan 1/sqrt2). Whether the
         // projection is orthographic or perspective is decided by the Persp slider.
-        this.isoPresets = [
-            ["NE \u2191", 45, 1], ["NW \u2191", 135, 1], ["SW \u2191", 225, 1], ["SE \u2191", 315, 1],
-            ["NE \u2193", 45, -1], ["NW \u2193", 135, -1], ["SW \u2193", 225, -1], ["SE \u2193", 315, -1],
-        ];
-        this.isoSelect = document.createElement("select");
-        this.isoSelect.title = "View direction: yaw quadrant, \u2191 from above / \u2193 from below " +
-            "(elevation 35.26\u00B0). Switching keeps the current pan/scale/foreshortening.";
-        this.isoSelect.style.cssText = BTN_CSS + "pointer-events:auto;";
-        for (const [label] of this.isoPresets) {
-            const o = document.createElement("option");
-            o.textContent = label;
-            this.isoSelect.appendChild(o);
-        }
-        this.isoSelect.addEventListener("pointerdown", (e) => e.stopPropagation());
-        this.isoSelect.addEventListener("change", () => this.applyPreset());
-        bar.appendChild(this.isoSelect);
+        const yawWrap = document.createElement("label");
+        yawWrap.title = "View direction: rotate around the vertical axis in 45\u00B0 steps, " +
+            "classic isometric elevation 35.26\u00B0. Dragging keeps the current " +
+            "pan/scale/foreshortening.";
+        yawWrap.style.cssText = BTN_CSS + "pointer-events:auto;display:flex;align-items:center;" +
+            "gap:5px;cursor:default;";
+        this.yawLabel = document.createElement("span");
+        this.yawLabel.textContent = "Yaw 45\u00B0";
+        this.yawLabel.style.cssText = "min-width:48px;font-size:10px;color:#bbb;";
+        this.yawSlider = document.createElement("input");
+        this.yawSlider.type = "range";
+        this.yawSlider.min = "0";
+        this.yawSlider.max = "315";
+        this.yawSlider.step = "45";
+        this.yawSlider.value = "45";
+        this.yawSlider.style.cssText = "width:90px;";
+        this.yawSlider.addEventListener("pointerdown", (e) => e.stopPropagation());
+        this.yawSlider.addEventListener("input", () => {
+            this.yawLabel.textContent = `Yaw ${this.yawSlider.value}\u00B0`;
+            this.applyPreset();
+        });
+        yawWrap.appendChild(this.yawLabel);
+        yawWrap.appendChild(this.yawSlider);
+        bar.appendChild(yawWrap);
 
         mkBtn("Frame", "Reset the composition: center the model and fit it to the view " +
-            "from the selected direction", () => this.applyPreset(true));
+            "from the current direction", () => this.applyPreset(true));
 
         // Foreshortening slider: 0deg = orthographic (true isometry), >0deg = perspective
         // with that FOV. Uses dolly-zoom compensation so composition stays put.
@@ -115,8 +123,21 @@ class SnapshotViewer {
             this.perspLabel.textContent = `Persp ${this.perspSlider.value}\u00B0`;
             this.setPerspectiveAmount();
         });
+        const perspReset = document.createElement("button");
+        perspReset.textContent = "\u21BA0";
+        perspReset.title = "Reset foreshortening to 0\u00B0 (orthographic isometry)";
+        perspReset.style.cssText = BTN_CSS + "pointer-events:auto;padding:1px 5px;font-size:10px;";
+        perspReset.addEventListener("pointerdown", (e) => e.stopPropagation());
+        perspReset.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.perspSlider.value = "0";
+            this.perspLabel.textContent = "Persp 0\u00B0";
+            this.setPerspectiveAmount();
+        });
         sliderWrap.appendChild(this.perspLabel);
         sliderWrap.appendChild(this.perspSlider);
+        sliderWrap.appendChild(perspReset);
         bar.appendChild(sliderWrap);
 
         const bgBtn = mkBtn("BG: transparent", "Toggle transparent background for the snapshot", () => {
@@ -348,9 +369,9 @@ class SnapshotViewer {
         cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
     }
 
-    // Re-orient the camera to the selected direction preset (elevation +-35.264deg,
-    // yaw quadrant), projection per the Persp slider.
-    // reframe=false (preset switching): carry the current composition over - keep the
+    // Re-orient the camera to the yaw-slider direction (45deg detents around Y,
+    // fixed isometric elevation +35.264deg), projection per the Persp slider.
+    // reframe=false (yaw dragging): carry the current composition over - keep the
     // orbit target (pan) and the view scale, only the direction changes.
     // reframe=true (Frame button / model load): reset composition - center on the
     // model and fit it to the view.
@@ -358,9 +379,8 @@ class SnapshotViewer {
         if (!this.boundingSphere) { this.setStatus("no model loaded"); return; }
         const THREE = window.THREE;
         const s = this.boundingSphere;
-        const [, yawDeg, elevSign] = this.isoPresets[this.isoSelect.selectedIndex] ?? this.isoPresets[0];
-        const yaw = THREE.MathUtils.degToRad(yawDeg);
-        const elev = Math.atan(1 / Math.SQRT2) * elevSign;
+        const yaw = THREE.MathUtils.degToRad(parseFloat(this.yawSlider?.value || "45"));
+        const elev = Math.atan(1 / Math.SQRT2);
         const dir = new THREE.Vector3(
             Math.cos(elev) * Math.sin(yaw),
             Math.sin(elev),
