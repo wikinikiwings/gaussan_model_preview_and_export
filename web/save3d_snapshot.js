@@ -69,32 +69,37 @@ class SnapshotViewer {
             return b;
         };
 
-        // View direction: yaw slider around the Y axis, 8 detents (45deg steps), always
-        // with the classic isometric elevation +35.26deg (arctan 1/sqrt2). Whether the
-        // projection is orthographic or perspective is decided by the Persp slider.
-        const yawWrap = document.createElement("label");
+        // View direction: rotate around the Y axis in 45deg steps (8 positions, wraps
+        // around), always with the classic isometric elevation +35.26deg (arctan 1/sqrt2).
+        // Whether the projection is orthographic or perspective is decided by the Persp slider.
+        this.yawDeg = 45;
+        const yawWrap = document.createElement("span");
         yawWrap.title = "View direction: rotate around the vertical axis in 45\u00B0 steps, " +
-            "classic isometric elevation 35.26\u00B0. Dragging keeps the current " +
+            "classic isometric elevation 35.26\u00B0. Rotating keeps the current " +
             "pan/scale/foreshortening.";
         yawWrap.style.cssText = BTN_CSS + "pointer-events:auto;display:flex;align-items:center;" +
-            "gap:5px;cursor:default;";
+            "gap:5px;cursor:default;padding:1px 5px;";
         this.yawLabel = document.createElement("span");
         this.yawLabel.textContent = "Yaw 45\u00B0";
-        this.yawLabel.style.cssText = "min-width:48px;font-size:10px;color:#bbb;";
-        this.yawSlider = document.createElement("input");
-        this.yawSlider.type = "range";
-        this.yawSlider.min = "0";
-        this.yawSlider.max = "315";
-        this.yawSlider.step = "45";
-        this.yawSlider.value = "45";
-        this.yawSlider.style.cssText = "width:90px;";
-        this.yawSlider.addEventListener("pointerdown", (e) => e.stopPropagation());
-        this.yawSlider.addEventListener("input", () => {
-            this.yawLabel.textContent = `Yaw ${this.yawSlider.value}\u00B0`;
-            this.applyPreset();
-        });
+        this.yawLabel.style.cssText = "min-width:52px;font-size:10px;color:#bbb;text-align:center;";
+        const mkYawBtn = (label, title, delta) => {
+            const b = document.createElement("button");
+            b.textContent = label;
+            b.title = title;
+            b.style.cssText = BTN_CSS + "pointer-events:auto;padding:1px 6px;";
+            b.addEventListener("pointerdown", (e) => e.stopPropagation());
+            b.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.yawDeg = ((this.yawDeg + delta) % 360 + 360) % 360;
+                this.yawLabel.textContent = `Yaw ${this.yawDeg}\u00B0`;
+                this.applyPreset();
+            });
+            return b;
+        };
+        yawWrap.appendChild(mkYawBtn("\u21BA", "Rotate view 45\u00B0 counter-clockwise", -45));
         yawWrap.appendChild(this.yawLabel);
-        yawWrap.appendChild(this.yawSlider);
+        yawWrap.appendChild(mkYawBtn("\u21BB", "Rotate view 45\u00B0 clockwise", 45));
         bar.appendChild(yawWrap);
 
         mkBtn("Frame", "Reset the composition: center the model and fit it to the view " +
@@ -379,7 +384,7 @@ class SnapshotViewer {
         if (!this.boundingSphere) { this.setStatus("no model loaded"); return; }
         const THREE = window.THREE;
         const s = this.boundingSphere;
-        const yaw = THREE.MathUtils.degToRad(parseFloat(this.yawSlider?.value || "45"));
+        const yaw = THREE.MathUtils.degToRad(this.yawDeg ?? 45);
         const elev = Math.atan(1 / Math.SQRT2);
         const dir = new THREE.Vector3(
             Math.cos(elev) * Math.sin(yaw),
