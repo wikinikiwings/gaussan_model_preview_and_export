@@ -105,6 +105,27 @@ def _camera_info_from_state(camera_state: str, mesh):
     return _fallback_camera_info(mesh)
 
 
+SPLAT_OUTPUT_SLOT = 1  # outputs are [camera_info, splat]
+
+
+def _splat_output_is_consumed(prompt, unique_id) -> bool:
+    """True if any node in the prompt takes its input from this node's splat output.
+    Links in a prompt look like {"inputs": {"splat": [source_node_id, source_slot]}}.
+    """
+    if not prompt or unique_id is None:
+        return False
+    me = str(unique_id)
+    try:
+        for node in prompt.values():
+            for link in (node.get("inputs") or {}).values():
+                if (isinstance(link, (list, tuple)) and len(link) == 2
+                        and str(link[0]) == me and int(link[1]) == SPLAT_OUTPUT_SLOT):
+                    return True
+    except Exception:  # noqa: BLE001 - a diagnostic must never break execution
+        logging.debug("SaveGLBSnapshot: could not inspect the prompt for splat consumers")
+    return False
+
+
 class SaveGLBSnapshot(IO.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -151,7 +172,7 @@ class SaveGLBSnapshot(IO.ComfyNode):
             ],
             outputs=[IO.Load3DCamera.Output(display_name="camera_info"),
                      IO.Splat.Output(display_name="splat")],
-            hidden=[IO.Hidden.prompt, IO.Hidden.extra_pnginfo],
+            hidden=[IO.Hidden.prompt, IO.Hidden.extra_pnginfo, IO.Hidden.unique_id],
         )
 
     @classmethod
@@ -202,9 +223,18 @@ class SaveGLBSnapshot(IO.ComfyNode):
         # viewport's slider is negative the splat geometry itself is warped instead. Only
         # done when a splat is actually wired in and the slider asks for it - the warp is
         # an eigh over every gaussian, not something to run on every save.
-        splat_out = warp_splat_reverse_perspective(
-            splat, cam_info, float(cam_info.get("reversePerspective", 0.0) or 0.0)
-        ) if splat is not None else None
+        if splat is None:
+            # Nothing to pass through. If something downstream consumes the splat output it
+            # would fail on a None with a confusing traceback, so say what is wrong here.
+            if _splat_output_is_consumed(cls.hidden.prompt, cls.hidden.unique_id):
+                raise ValueError(
+                    "The 'splat' output of Save 3D Model (Snapshot) is connected, but nothing is "
+                    "wired into its 'splat' input. Connect the splat this mesh was reconstructed "
+                    "from (the same one feeding SplatToMesh) to the node's 'splat' input.")
+            splat_out = None
+        else:
+            splat_out = warp_splat_reverse_perspective(
+                splat, cam_info, float(cam_info.get("reversePerspective", 0.0) or 0.0))
         # Custom ui key so the builtin 3d preview does not attach; our JS widget consumes it.
         return IO.NodeOutput(cam_info, splat_out, ui={"snapshot3d": results})
 
