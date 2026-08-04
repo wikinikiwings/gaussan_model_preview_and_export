@@ -1,12 +1,14 @@
-# Save 3D Model (Snapshot) — ComfyUI custom node
+# Preview 3D + Snapshot — ComfyUI custom node
 
 Alternative to the builtin **SaveGLB** node with an own three.js viewport and PNG snapshot tooling.
 Built for gaussian-splat pipelines (e.g. TripoSplat → `SplatToMesh` → this node), works with any GLB mesh.
 
 ## Features
 
-- Saves the input mesh / 3D file to the output folder exactly like the builtin SaveGLB
-  (same helpers, same filename prefix + counter).
+- Shows the input mesh / 3D file in an interactive viewport. By default the model is written to
+  the **temp** folder (which ComfyUI clears) rather than `output`, so repeated runs do not pile
+  up on disk — useful on ephemeral pods. Flip `save_model` on to write it to `output` exactly
+  like SaveGLB, or use the viewport's **⇩ GLB** button to download a copy to your device.
 - Own interactive viewport (three.js, OrbitControls) that stretches with the node.
 - **8 view-direction presets** — 4 yaw quadrants (45°/135°/225°/315°) × view from above/below,
   elevation ±35.264° (arctan 1/√2), auto-framed to the model bounding sphere.
@@ -51,7 +53,7 @@ three.js (r147, MIT license) is vendored under `web/lib/` — no runtime CDN dep
 
 ## Usage
 
-Add **Save 3D Model (Snapshot)** (category `3d`), feed it a mesh (e.g. the `mesh` output
+Add **Preview 3D + Snapshot** (category `3d`), feed it a mesh (e.g. the `mesh` output
 of `SplatToMesh`), run the workflow. The model loads into the viewport already framed
 from the selected direction preset; orbit freely, dial in the foreshortening, then hit
 **Save PNG**.

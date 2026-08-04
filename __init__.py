@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import random
 
 from typing_extensions import override
 
@@ -131,12 +132,13 @@ class SaveGLBSnapshot(IO.ComfyNode):
     def define_schema(cls):
         return IO.Schema(
             node_id="SaveGLBSnapshot",
-            display_name="Save 3D Model (Snapshot)",
-            search_aliases=["save glb snapshot", "isometric png", "3d snapshot"],
+            display_name="Preview 3D + Snapshot",
+            search_aliases=["preview 3d snapshot", "save glb snapshot", "isometric png", "3d snapshot"],
             category="3d",
-            description="Saves the mesh as GLB (like SaveGLB) and shows it in a custom viewport "
-                        "with an isometric camera preset and a 'Save PNG' snapshot button. "
-                        "PNG snapshots are written to the output folder using the same filename prefix.",
+            description="Shows the mesh in a viewport with isometric presets, a perspective/reverse-perspective "
+                        "slider and a PNG snapshot button. The model itself goes to the temp folder by default "
+                        "(nothing accumulates on disk; use the viewport's GLB button to keep a copy locally) - "
+                        "switch save_model on to write it to the output folder like SaveGLB does.",
             is_output_node=True,
             inputs=[
                 IO.MultiType.Input(
@@ -159,6 +161,11 @@ class SaveGLBSnapshot(IO.ComfyNode):
                     tooltip="Mesh or 3D file to save",
                 ),
                 IO.String.Input("filename_prefix", default="3d/ComfyUI"),
+                IO.Boolean.Input("save_model", default=False,
+                                 tooltip="Off: the GLB is only written to the temp folder, which ComfyUI "
+                                         "clears - the viewport still shows it, and its GLB button downloads "
+                                         "a copy to your device. On: the GLB is written to the output folder "
+                                         "like SaveGLB. PNG snapshots always go to the output folder."),
                 IO.String.Input("camera_state", default="",
                                 tooltip="Camera of the node's viewport, filled in automatically by its UI "
                                         "(hidden). Drives the camera_info output; when empty a default "
@@ -176,10 +183,19 @@ class SaveGLBSnapshot(IO.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, mesh: Types.MESH | Types.File3D, filename_prefix: str,
+    def execute(cls, mesh: Types.MESH | Types.File3D, filename_prefix: str, save_model: bool = False,
                 camera_state: str = "", splat=None) -> IO.NodeOutput:
+        # Preview by default: the model goes to temp (cleared by ComfyUI) so runs do not pile
+        # up on disk, which matters on ephemeral pods. A random token keeps concurrent/
+        # repeated runs from colliding there, the same trick PreviewImage uses.
+        if save_model:
+            base_dir, file_type = folder_paths.get_output_directory(), "output"
+        else:
+            base_dir, file_type = folder_paths.get_temp_directory(), "temp"
+            filename_prefix += "_temp_" + "".join(random.choice("abcdefghijklmnopqrstuvwxyz")
+                                                  for _ in range(5))
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(
-            filename_prefix, folder_paths.get_output_directory())
+            filename_prefix, base_dir)
         results = []
 
         metadata = {}
@@ -194,7 +210,7 @@ class SaveGLBSnapshot(IO.ComfyNode):
             ext = mesh.format or "glb"
             f = f"{filename}_{counter:05}_.{ext}"
             mesh.save_to(os.path.join(full_output_folder, f))
-            results.append({"filename": f, "subfolder": subfolder, "type": "output"})
+            results.append({"filename": f, "subfolder": subfolder, "type": file_type})
             counter += 1
         else:
             texture_b = getattr(mesh, "texture", None)
@@ -216,7 +232,7 @@ class SaveGLBSnapshot(IO.ComfyNode):
                          vertex_colors=v_colors,
                          texture_image=tex_img,
                          unlit=getattr(mesh, "unlit", False))
-                results.append({"filename": f, "subfolder": subfolder, "type": "output"})
+                results.append({"filename": f, "subfolder": subfolder, "type": file_type})
                 counter += 1
         cam_info = _camera_info_from_state(camera_state, mesh)
         # Reverse perspective cannot be expressed through camera parameters, so when the

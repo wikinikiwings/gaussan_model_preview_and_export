@@ -158,6 +158,9 @@ class SnapshotViewer {
         mkBtn("Open \u2197", "Open the current view as PNG in a new browser tab (nothing is saved)",
             () => this.openInTab());
 
+        mkBtn("\u21E9 GLB", "Download the model file to this device (the model itself lives in the " +
+            "server's temp folder unless save_model is on)", () => this.downloadModel());
+
         this.status = document.createElement("span");
         this.status.style.cssText =
             "color:#9a9a9a;font-size:10px;pointer-events:none;max-width:100%;" +
@@ -260,6 +263,8 @@ class SnapshotViewer {
             return;
         }
         this.setStatus("loading " + (fileInfo?.filename || ""));
+        this.modelUrl = url;
+        this.modelFilename = fileInfo?.filename || "model.glb";
         new window.THREE.GLTFLoader().load(url, (gltf) => {
             if (this.disposed) return;
             if (this.modelRoot) this.scene.remove(this.modelRoot);
@@ -512,6 +517,29 @@ class SnapshotViewer {
     getPrefix() {
         const w = this.node.widgets?.find((x) => x.name === "filename_prefix");
         return (w?.value || "3d/ComfyUI") + "";
+    }
+
+    // Fetch the model file the viewport is showing and hand it to the browser as a
+    // download, so a copy can be kept locally without the server holding onto it.
+    async downloadModel() {
+        if (!this.modelUrl) { this.setStatus("no model loaded"); return; }
+        try {
+            const resp = await fetch(this.modelUrl);
+            if (!resp.ok) throw new Error(resp.statusText);
+            const url = URL.createObjectURL(await resp.blob());
+            const a = document.createElement("a");
+            a.href = url;
+            // Drop the temp-run token from the visible filename.
+            a.download = this.modelFilename.replace(/_temp_[a-z]{5}/, "");
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+            this.setStatus("downloaded " + a.download);
+        } catch (e) {
+            console.error("[save3d_snapshot] model download failed", e);
+            this.setStatus("model download failed (see console)");
+        }
     }
 
     // Render the current view at high resolution (longest side SNAPSHOT_MAX_DIM) and
