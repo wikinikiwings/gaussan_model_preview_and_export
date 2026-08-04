@@ -563,14 +563,16 @@ class SnapshotViewer {
         const d = this.gizmoDrag;
         if (!d) return;
         const THREE = window.THREE;
-        const angle = ((e.clientX - d.startX) * d.t2.x + (e.clientY - d.startY) * d.t2.y) * 0.012;
-        const q = new THREE.Quaternion().setFromAxisAngle(d.axis, angle);
+        const drag = ((e.clientX - d.startX) * d.t2.x + (e.clientY - d.startY) * d.t2.y) * 0.012;
+        // The camera has to turn the opposite way for the model to follow the pointer:
+        // dragging a ribbon down rotates the model down, not up.
+        const q = new THREE.Quaternion().setFromAxisAngle(d.axis, -drag);
         // Rigid rotation of the whole camera about the single world axis: position and up get
         // the same quaternion, and nothing else touches the camera until the drag ends.
         this.camera.position.copy(d.target).add(d.startPos.clone().sub(d.target).applyQuaternion(q));
         this.camera.up.copy(d.startUp).applyQuaternion(q);
         this.camera.lookAt(d.target);
-        const deg = THREE.MathUtils.radToDeg(angle);
+        const deg = THREE.MathUtils.radToDeg(drag);
         this.setStatus(`rotate ${d.ring.userData.name}: ${deg >= 0 ? "+" : ""}${deg.toFixed(0)}\u00B0`);
     }
 
