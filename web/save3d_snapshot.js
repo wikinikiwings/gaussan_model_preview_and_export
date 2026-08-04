@@ -203,6 +203,10 @@ class SnapshotViewer {
         // Capture phase on the container: this runs before OrbitControls' own handler on the
         // canvas, so grabbing a gizmo ring does not also start an orbit drag.
         this.root.addEventListener("pointerdown", (e) => this.onGizmoPointerDown(e), true);
+        this.root.addEventListener("pointermove", (e) => this.onGizmoHover(e));
+        this.root.addEventListener("pointerleave", () => {
+            if (this.gizmoHover) { this.gizmoHover = null; this.applyGizmoVisuals(); }
+        });
 
         this.resizeObserver = new ResizeObserver(() => this.onResize());
         this.resizeObserver.observe(this.root);
@@ -375,26 +379,61 @@ class SnapshotViewer {
         this.gizmoDrag = null;
         this.raycaster = new THREE.Raycaster();
 
-        // Opaque-ish core so the far halves of the ribbons are hidden - that is what makes
-        // it read as a sphere rather than three flat circles.
+        // Opaque core so the far halves of the ribbons are genuinely hidden by the depth
+        // test. Transparency here would blend several ribbons into the same pixels, and the
+        // ray would then pick the front-most one rather than the one that looks topmost.
         this.gizmoScene.add(new THREE.Mesh(
             new THREE.SphereGeometry(0.93, 24, 18),
-            new THREE.MeshBasicMaterial({ color: 0x202020, transparent: true, opacity: 0.55 })));
+            new THREE.MeshBasicMaterial({ color: 0x1e1e1e })));
 
-        const ring = (axis, color, orient) => {
+        const ring = (axis, name, base, active, orient) => {
             const m = new THREE.Mesh(
                 new THREE.TorusGeometry(1, 0.055, 8, 96),
-                new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+                new THREE.MeshBasicMaterial({ color: base }));
             orient(m);                       // a torus lies in XY, i.e. its axis is +Z
-            m.userData.axis = axis;
+            m.userData = { axis, name, base, active };
             this.gizmoScene.add(m);
             return m;
         };
         this.gizmoRings = [
-            ring(new THREE.Vector3(1, 0, 0), 0xff5f6d, (m) => { m.rotation.y = Math.PI / 2; }),
-            ring(new THREE.Vector3(0, 1, 0), 0x8fdc5a, (m) => { m.rotation.x = Math.PI / 2; }),
-            ring(new THREE.Vector3(0, 0, 1), 0x5aa9ff, () => {}),
+            ring(new THREE.Vector3(1, 0, 0), "X", 0x8f3540, 0xff6b78,
+                (m) => { m.rotation.y = Math.PI / 2; }),
+            ring(new THREE.Vector3(0, 1, 0), "Y", 0x4d8a36, 0x9ff06a,
+                (m) => { m.rotation.x = Math.PI / 2; }),
+            ring(new THREE.Vector3(0, 0, 1), "Z", 0x36699e, 0x6fb6ff, () => {}),
         ];
+        this.gizmoHover = null;
+    }
+
+    // Highlight whichever ribbon is hovered or being dragged, so it is obvious which axis a
+    // drag will use before the drag starts.
+    applyGizmoVisuals() {
+        const live = this.gizmoDrag?.ring || this.gizmoHover || null;
+        for (const r of this.gizmoRings || []) {
+            const on = r === live;
+            r.material.color.setHex(on ? r.userData.active : r.userData.base);
+            r.scale.setScalar(on ? 1.06 : 1.0);
+        }
+        if (this.renderer) this.renderer.domElement.style.cursor = live ? "grab" : "";
+    }
+
+    // Ribbon under the pointer, or null.
+    gizmoRingAt(e) {
+        if (!this.gizmoRings) return null;
+        const ndc = this.gizmoNDC(e);
+        if (!ndc) return null;
+        this.syncGizmoCamera();
+        this.raycaster.setFromCamera(ndc, this.gizmoCam);
+        return this.raycaster.intersectObjects(this.gizmoRings, false)[0] || null;
+    }
+
+    onGizmoHover(e) {
+        if (this.gizmoDrag || e.buttons !== 0) return;   // not while orbiting or dragging
+        const hover = this.gizmoRingAt(e)?.object || null;
+        if (hover === this.gizmoHover) return;
+        this.gizmoHover = hover;
+        this.applyGizmoVisuals();
+        if (hover) this.setStatus(`drag to rotate around ${hover.userData.name}`);
     }
 
     // Square region in the bottom-right corner, in CSS pixels (y measured from the bottom,
@@ -444,11 +483,7 @@ class SnapshotViewer {
 
     onGizmoPointerDown(e) {
         if (!this.gizmoRings || e.button !== 0 || this.gizmoDrag) return;
-        const ndc = this.gizmoNDC(e);
-        if (!ndc) return;
-        this.syncGizmoCamera();
-        this.raycaster.setFromCamera(ndc, this.gizmoCam);
-        const hit = this.raycaster.intersectObjects(this.gizmoRings, false)[0];
+        const hit = this.gizmoRingAt(e);
         if (!hit) return;
         e.preventDefault();
         e.stopPropagation();                      // keep OrbitControls out of this drag
@@ -464,9 +499,6 @@ class SnapshotViewer {
             this.controls.enableDamping = true;
             this.controls.enabled = false;
         }
-        // Dim the other ribbons so it is visible that only this axis is live.
-        for (const r of this.gizmoRings) r.material.opacity = r === hit.object ? 1.0 : 0.22;
-        this.gizmoAxisName = { "1,0,0": "X", "0,1,0": "Y", "0,0,1": "Z" }[axis.toArray().join(",")] || "";
 
         // Screen-space tangent of the ring at the grab point, so dragging along the ribbon
         // rotates the way it looks like it should whatever the current orientation is.
@@ -479,7 +511,7 @@ class SnapshotViewer {
         t2.normalize();
 
         this.gizmoDrag = {
-            axis, t2,
+            axis, t2, ring: hit.object,
             startX: e.clientX, startY: e.clientY,
             startPos: this.camera.position.clone(),
             startUp: this.camera.up.clone(),
@@ -487,6 +519,7 @@ class SnapshotViewer {
             move: (ev) => this.onGizmoPointerMove(ev),
             up: (ev) => this.onGizmoPointerUp(ev),
         };
+        this.applyGizmoVisuals();
         window.addEventListener("pointermove", this.gizmoDrag.move);
         window.addEventListener("pointerup", this.gizmoDrag.up);
         window.addEventListener("pointercancel", this.gizmoDrag.up);
@@ -504,7 +537,7 @@ class SnapshotViewer {
         this.camera.up.copy(d.startUp).applyQuaternion(q);
         this.camera.lookAt(d.target);
         const deg = THREE.MathUtils.radToDeg(angle);
-        this.setStatus(`rotate ${this.gizmoAxisName}: ${deg >= 0 ? "+" : ""}${deg.toFixed(0)}\u00B0`);
+        this.setStatus(`rotate ${d.ring.userData.name}: ${deg >= 0 ? "+" : ""}${deg.toFixed(0)}\u00B0`);
     }
 
     onGizmoPointerUp() {
@@ -514,7 +547,8 @@ class SnapshotViewer {
         window.removeEventListener("pointerup", d.up);
         window.removeEventListener("pointercancel", d.up);
         this.gizmoDrag = null;
-        for (const r of this.gizmoRings || []) r.material.opacity = 0.9;
+        this.gizmoHover = null;
+        this.applyGizmoVisuals();
         if (this.controls) {
             // Resync the controls' internal spherical state to the pose we just built,
             // with damping off so no inertia is applied on the way back in.
