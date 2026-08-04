@@ -211,7 +211,7 @@ class SnapshotViewer {
         const loop = () => {
             if (this.disposed) return;
             requestAnimationFrame(loop);
-            this.controls?.update();
+            if (!this.gizmoDrag) this.controls?.update();   // frozen while a ring is dragged
             // OrbitControls and aspect updates rebuild the ortho projection matrix,
             // wiping the custom reverse-perspective row - reapply it every frame.
             if (this.reverseParams) this.applyReversePerspective();
@@ -455,6 +455,19 @@ class SnapshotViewer {
 
         const THREE = window.THREE;
         const axis = hit.object.userData.axis.clone();
+        // Settle the controls and clear any leftover inertia before sampling the start pose:
+        // with damping on, residual sphericalDelta keeps decaying for frames afterwards and
+        // would add azimuth/polar drift on top of our single-axis rotation.
+        if (this.controls) {
+            this.controls.enableDamping = false;
+            this.controls.update();
+            this.controls.enableDamping = true;
+            this.controls.enabled = false;
+        }
+        // Dim the other ribbons so it is visible that only this axis is live.
+        for (const r of this.gizmoRings) r.material.opacity = r === hit.object ? 1.0 : 0.22;
+        this.gizmoAxisName = { "1,0,0": "X", "0,1,0": "Y", "0,0,1": "Z" }[axis.toArray().join(",")] || "";
+
         // Screen-space tangent of the ring at the grab point, so dragging along the ribbon
         // rotates the way it looks like it should whatever the current orientation is.
         const p = hit.point.clone();
@@ -474,7 +487,6 @@ class SnapshotViewer {
             move: (ev) => this.onGizmoPointerMove(ev),
             up: (ev) => this.onGizmoPointerUp(ev),
         };
-        if (this.controls) this.controls.enabled = false;
         window.addEventListener("pointermove", this.gizmoDrag.move);
         window.addEventListener("pointerup", this.gizmoDrag.up);
         window.addEventListener("pointercancel", this.gizmoDrag.up);
@@ -486,10 +498,13 @@ class SnapshotViewer {
         const THREE = window.THREE;
         const angle = ((e.clientX - d.startX) * d.t2.x + (e.clientY - d.startY) * d.t2.y) * 0.012;
         const q = new THREE.Quaternion().setFromAxisAngle(d.axis, angle);
+        // Rigid rotation of the whole camera about the single world axis: position and up get
+        // the same quaternion, and nothing else touches the camera until the drag ends.
         this.camera.position.copy(d.target).add(d.startPos.clone().sub(d.target).applyQuaternion(q));
         this.camera.up.copy(d.startUp).applyQuaternion(q);
         this.camera.lookAt(d.target);
-        this.controls?.update();
+        const deg = THREE.MathUtils.radToDeg(angle);
+        this.setStatus(`rotate ${this.gizmoAxisName}: ${deg >= 0 ? "+" : ""}${deg.toFixed(0)}\u00B0`);
     }
 
     onGizmoPointerUp() {
@@ -499,7 +514,15 @@ class SnapshotViewer {
         window.removeEventListener("pointerup", d.up);
         window.removeEventListener("pointercancel", d.up);
         this.gizmoDrag = null;
-        if (this.controls) this.controls.enabled = true;
+        for (const r of this.gizmoRings || []) r.material.opacity = 0.9;
+        if (this.controls) {
+            // Resync the controls' internal spherical state to the pose we just built,
+            // with damping off so no inertia is applied on the way back in.
+            this.controls.enableDamping = false;
+            this.controls.update();
+            this.controls.enableDamping = true;
+            this.controls.enabled = true;
+        }
         this.updateCameraState();
     }
 
