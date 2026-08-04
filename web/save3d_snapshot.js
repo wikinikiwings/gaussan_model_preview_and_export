@@ -199,6 +199,11 @@ class SnapshotViewer {
         this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
 
+        this.initGizmo();
+        // Capture phase on the container: this runs before OrbitControls' own handler on the
+        // canvas, so grabbing a gizmo ring does not also start an orbit drag.
+        this.root.addEventListener("pointerdown", (e) => this.onGizmoPointerDown(e), true);
+
         this.resizeObserver = new ResizeObserver(() => this.onResize());
         this.resizeObserver.observe(this.root);
         this.onResize();
@@ -211,6 +216,7 @@ class SnapshotViewer {
             // wiping the custom reverse-perspective row - reapply it every frame.
             if (this.reverseParams) this.applyReversePerspective();
             this.renderer.render(this.scene, this.camera);
+            this.renderGizmo();
         };
         loop();
     }
@@ -356,6 +362,148 @@ class SnapshotViewer {
         this.updateCameraState();
     }
 
+    // ---- rotation gizmo -------------------------------------------------------------
+    // A sphere of three ribbons in the corner of the viewport: drag a ring to rotate the
+    // camera around that world axis. Purely navigational - the model is never touched, so
+    // the exported camera_info stays truthful. Rotating around the view axis is roll, which
+    // is held in camera.up: OrbitControls captures its orbit axis once at construction but
+    // ends update() with lookAt(), which honours camera.up, so the roll survives.
+    initGizmo() {
+        const THREE = window.THREE;
+        this.gizmoScene = new THREE.Scene();
+        this.gizmoCam = new THREE.OrthographicCamera(-1.35, 1.35, 1.35, -1.35, 0.1, 100);
+        this.gizmoDrag = null;
+        this.raycaster = new THREE.Raycaster();
+
+        // Opaque-ish core so the far halves of the ribbons are hidden - that is what makes
+        // it read as a sphere rather than three flat circles.
+        this.gizmoScene.add(new THREE.Mesh(
+            new THREE.SphereGeometry(0.93, 24, 18),
+            new THREE.MeshBasicMaterial({ color: 0x202020, transparent: true, opacity: 0.55 })));
+
+        const ring = (axis, color, orient) => {
+            const m = new THREE.Mesh(
+                new THREE.TorusGeometry(1, 0.055, 8, 96),
+                new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+            orient(m);                       // a torus lies in XY, i.e. its axis is +Z
+            m.userData.axis = axis;
+            this.gizmoScene.add(m);
+            return m;
+        };
+        this.gizmoRings = [
+            ring(new THREE.Vector3(1, 0, 0), 0xff5f6d, (m) => { m.rotation.y = Math.PI / 2; }),
+            ring(new THREE.Vector3(0, 1, 0), 0x8fdc5a, (m) => { m.rotation.x = Math.PI / 2; }),
+            ring(new THREE.Vector3(0, 0, 1), 0x5aa9ff, () => {}),
+        ];
+    }
+
+    // Square region in the bottom-right corner, in CSS pixels (y measured from the bottom,
+    // matching WebGLRenderer.setViewport).
+    gizmoRect() {
+        const w = this.root.clientWidth, h = this.root.clientHeight;
+        const size = Math.max(58, Math.min(104, Math.floor(Math.min(w, h) * 0.22)));
+        return { x: w - size - 10, y: 10, size };
+    }
+
+    syncGizmoCamera() {
+        if (!this.gizmoCam || !this.camera) return;
+        const target = this.controls?.target ?? new window.THREE.Vector3();
+        const dir = this.camera.position.clone().sub(target);
+        if (dir.lengthSq() < 1e-12) dir.set(0, 0, 1);
+        this.gizmoCam.position.copy(dir.normalize().multiplyScalar(5));
+        this.gizmoCam.up.copy(this.camera.up);
+        this.gizmoCam.lookAt(0, 0, 0);
+    }
+
+    renderGizmo() {
+        if (!this.gizmoScene) return;
+        const r = this.gizmoRect();
+        this.syncGizmoCamera();
+        this.renderer.autoClear = false;
+        this.renderer.setViewport(r.x, r.y, r.size, r.size);
+        this.renderer.setScissor(r.x, r.y, r.size, r.size);
+        this.renderer.setScissorTest(true);
+        this.renderer.clearDepth();               // gizmo depth-sorts against itself only
+        this.renderer.render(this.gizmoScene, this.gizmoCam);
+        this.renderer.setScissorTest(false);
+        const w = this.root.clientWidth, h = this.root.clientHeight;
+        this.renderer.setViewport(0, 0, w, h);    // restore, or the next frame draws cropped
+        this.renderer.setScissor(0, 0, w, h);
+        this.renderer.autoClear = true;
+    }
+
+    // Pointer -> normalized coordinates inside the gizmo region, or null if outside.
+    gizmoNDC(e) {
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        const r = this.gizmoRect();
+        const gx = (e.clientX - rect.left) - r.x;
+        const gy = (rect.height - (e.clientY - rect.top)) - r.y;
+        if (gx < 0 || gy < 0 || gx > r.size || gy > r.size) return null;
+        return new window.THREE.Vector2((gx / r.size) * 2 - 1, (gy / r.size) * 2 - 1);
+    }
+
+    onGizmoPointerDown(e) {
+        if (!this.gizmoRings || e.button !== 0 || this.gizmoDrag) return;
+        const ndc = this.gizmoNDC(e);
+        if (!ndc) return;
+        this.syncGizmoCamera();
+        this.raycaster.setFromCamera(ndc, this.gizmoCam);
+        const hit = this.raycaster.intersectObjects(this.gizmoRings, false)[0];
+        if (!hit) return;
+        e.preventDefault();
+        e.stopPropagation();                      // keep OrbitControls out of this drag
+
+        const THREE = window.THREE;
+        const axis = hit.object.userData.axis.clone();
+        // Screen-space tangent of the ring at the grab point, so dragging along the ribbon
+        // rotates the way it looks like it should whatever the current orientation is.
+        const p = hit.point.clone();
+        const tan = axis.clone().cross(p);
+        const a = p.clone().project(this.gizmoCam);
+        const b = p.clone().add(tan.normalize().multiplyScalar(0.2)).project(this.gizmoCam);
+        const t2 = new THREE.Vector2(b.x - a.x, -(b.y - a.y));   // NDC y is up, screen y is down
+        if (t2.lengthSq() < 1e-9) t2.set(1, 0);
+        t2.normalize();
+
+        this.gizmoDrag = {
+            axis, t2,
+            startX: e.clientX, startY: e.clientY,
+            startPos: this.camera.position.clone(),
+            startUp: this.camera.up.clone(),
+            target: (this.controls?.target ?? new THREE.Vector3()).clone(),
+            move: (ev) => this.onGizmoPointerMove(ev),
+            up: (ev) => this.onGizmoPointerUp(ev),
+        };
+        if (this.controls) this.controls.enabled = false;
+        window.addEventListener("pointermove", this.gizmoDrag.move);
+        window.addEventListener("pointerup", this.gizmoDrag.up);
+        window.addEventListener("pointercancel", this.gizmoDrag.up);
+    }
+
+    onGizmoPointerMove(e) {
+        const d = this.gizmoDrag;
+        if (!d) return;
+        const THREE = window.THREE;
+        const angle = ((e.clientX - d.startX) * d.t2.x + (e.clientY - d.startY) * d.t2.y) * 0.012;
+        const q = new THREE.Quaternion().setFromAxisAngle(d.axis, angle);
+        this.camera.position.copy(d.target).add(d.startPos.clone().sub(d.target).applyQuaternion(q));
+        this.camera.up.copy(d.startUp).applyQuaternion(q);
+        this.camera.lookAt(d.target);
+        this.controls?.update();
+    }
+
+    onGizmoPointerUp() {
+        const d = this.gizmoDrag;
+        if (!d) return;
+        window.removeEventListener("pointermove", d.move);
+        window.removeEventListener("pointerup", d.up);
+        window.removeEventListener("pointercancel", d.up);
+        this.gizmoDrag = null;
+        if (this.controls) this.controls.enabled = true;
+        this.updateCameraState();
+    }
+
+    // ---- camera placement -----------------------------------------------------------
     // Two models are "the same shot" if the old framing still contains the new one:
     // centers within a radius of each other and a scale ratio inside 0.5x..2x.
     boundsComparable(a, b) {
@@ -497,6 +645,9 @@ class SnapshotViewer {
             Math.cos(elev) * Math.cos(yaw),
         ).normalize();
         if (reframe || !this.controls) {
+            // A full reset also clears any roll picked up from the gizmo.
+            this.perspCam.up.set(0, 1, 0);
+            this.orthoCam.up.set(0, 1, 0);
             this.placeCamera(dir, s.center.clone(), s.radius * 1.15);
         } else {
             this.placeCamera(dir, this.controls.target.clone(), this.currentHalfHeight());
@@ -616,6 +767,11 @@ class SnapshotViewer {
 
     dispose() {
         this.disposed = true;
+        this.onGizmoPointerUp();
+        this.gizmoScene?.traverse((o) => {
+            o.geometry?.dispose();
+            o.material?.dispose();
+        });
         this.resizeObserver?.disconnect();
         this.controls?.dispose();
         this.renderer?.dispose();

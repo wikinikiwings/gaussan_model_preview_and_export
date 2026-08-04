@@ -83,6 +83,7 @@ survives a page reload.
 | `📷 Save PNG` | Renders the current view at high resolution (longest side 2048 px), writes it to `output` with the same prefix/counter as the model, and downloads a copy to your device. |
 | `Open ↗` | Opens the same high-res PNG in a new browser tab. Nothing is saved anywhere. |
 | `⇩ GLB` | Downloads the model file to your device, so you can keep a copy without the server storing one. |
+| Rotation gizmo | A sphere of three ribbons in the bottom-right corner. Drag a ribbon to rotate the camera around that world axis (red X, green Y, blue Z); dragging the ribbon facing you gives roll. Purely navigational — the model is never rotated, so `camera_info` stays truthful (roll included, it travels as the exported quaternion). `Frame` resets roll along with the rest of the composition. |
 
 ---
 
