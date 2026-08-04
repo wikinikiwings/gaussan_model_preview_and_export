@@ -426,6 +426,9 @@ class SnapshotViewer {
             fov,
             cameraType: persp ? "perspective" : "orthographic",
             zoom: 1,
+            // Strength of the reverse perspective (negative slider), consumed by the
+            // SplatReversePerspective node; RenderSplat ignores this key.
+            reversePerspective: this.perspFov < 0 ? -this.perspFov : 0,
             // Viewer-only extras (ignored by the Python side) so the exact toolbar state
             // can be restored, including negative (reverse-perspective) values.
             viewer: { yawDeg: this.yawDeg, persp: this.perspFov },

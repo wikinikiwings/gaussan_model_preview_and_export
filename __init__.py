@@ -25,6 +25,8 @@ from comfy_extras.nodes_save_3d import get_mesh_batch_item, save_glb
 from PIL import Image
 from server import PromptServer
 
+from .reverse_perspective import SplatReversePerspective
+
 WEB_DIRECTORY = "./web"
 
 ISO_ELEV_DEG = 35.264389682754654  # atan(1/sqrt(2)): classic isometric elevation
@@ -88,6 +90,11 @@ def _camera_info_from_state(camera_state: str, mesh):
                                else "perspective"),
                 "zoom": float(s.get("zoom") or 1.0),
             }
+            # Non-standard extra, ignored by RenderSplat: the strength of the viewport's
+            # reverse perspective, so SplatReversePerspective can follow the slider.
+            reverse = float(s.get("reversePerspective") or 0.0)
+            if reverse > 0.0:
+                info["reversePerspective"] = reverse
             q = s.get("quaternion")
             if isinstance(q, dict):
                 info["quaternion"] = {"x": float(q.get("x", 0.0)), "y": float(q.get("y", 0.0)),
@@ -216,7 +223,7 @@ async def save3d_snapshot_save_png(request):
 class Save3DSnapshotExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[IO.ComfyNode]]:
-        return [SaveGLBSnapshot]
+        return [SaveGLBSnapshot, SplatReversePerspective]
 
 
 async def comfy_entrypoint() -> Save3DSnapshotExtension:

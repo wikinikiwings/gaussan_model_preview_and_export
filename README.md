@@ -18,6 +18,23 @@ Built for gaussian-splat pipelines (e.g. TripoSplat → `SplatToMesh` → this n
   stores it into the ComfyUI output folder with the same prefix/counter as the GLB and
   downloads a copy to the user's device with the same filename.
 - **BG toggle** — transparent (default, PNG keeps alpha) or dark background.
+- **`camera_info` output** — the viewport reports its camera (three.js world space, distance
+  normalized to the framing invariant) into a hidden serialized widget, so the shot survives
+  page reloads, travels with the workflow JSON and can drive server-side rendering. Headless
+  runs fall back to an isometric camera fitted to the mesh.
+
+## Second node: Reverse Perspective (Splat)
+
+`SplatReversePerspective` (category `3d/splat`) brings the reverse-perspective look to
+gaussian splats. `RenderSplat` builds its projection analytically, so there is no matrix to
+override — instead this node warps the splat cloud: centres are displaced by
+`x' = x / w(z)`, `w(z) = 1 + (m / half_h) * (dist - z)`, and each covariance is transformed
+by the local Jacobian of that warp (re-extracted into scale + quaternion via `eigh`). Depth
+is deliberately left untouched, so the renderer's sorting and occlusion stay correct.
+
+Wiring: `splat` → this node → `RenderSplat`, with the **same `camera_info`** fed to both and
+RenderSplat's camera left **orthographic**. `amount = 0` makes the node follow the negative
+half of the viewport's Persp slider (passed along in `camera_info`).
 
 ## Install
 
