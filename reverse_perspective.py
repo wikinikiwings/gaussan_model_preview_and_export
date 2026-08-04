@@ -41,13 +41,16 @@ def warp_splat_reverse_perspective(splat, camera_info, amount: float):
 
     pos = splat.positions
     dev, dt = pos.device, pos.dtype
+    # positions may carry a batch dimension, e.g. (B, N, 3) - flatten it like the builtin
+    # splat nodes do, and restore the original shape at the end.
+    p = pos.reshape(-1, 3)
     # NB: the basis comes back in the splat frame (world -> splat is (x, -y, -z), applied
     # inside this helper), which is the frame splat.positions live in - so no extra
     # conversion here.
     eye, target, right, up, fwd = _camera_basis(camera_info, dev)
     W = torch.stack([right, up, fwd], 0).to(dt)   # rows = camera axes (splat -> camera)
     eye, target = eye.to(dt), target.to(dt)
-    cam = (pos - eye) @ W.T
+    cam = (p - eye) @ W.T
     x, y, z = cam.unbind(-1)
 
     dist = float((target - eye).norm().clamp_min(1e-6))
@@ -66,11 +69,11 @@ def warp_splat_reverse_perspective(splat, camera_info, amount: float):
 
     w = (1.0 + g * (dist - z)).clamp_min(0.15)
     inv_w = 1.0 / w
-    positions = torch.stack([x * inv_w, y * inv_w, z], -1) @ W + eye
+    positions = (torch.stack([x * inv_w, y * inv_w, z], -1) @ W + eye).reshape(pos.shape)
 
     # Sigma' = J Sigma J^T with the warp's local Jacobian
     #   J = [[1/w, 0, x*g/w^2], [0, 1/w, y*g/w^2], [0, 0, 1]]
-    n = pos.shape[0]
+    n = p.shape[0]
     J = torch.zeros(n, 3, 3, device=dev, dtype=dt)
     J[:, 0, 0] = inv_w
     J[:, 1, 1] = inv_w
