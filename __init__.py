@@ -25,7 +25,7 @@ from comfy_extras.nodes_save_3d import get_mesh_batch_item, save_glb
 from PIL import Image
 from server import PromptServer
 
-from .reverse_perspective import SplatReversePerspective
+from .reverse_perspective import warp_splat_reverse_perspective
 
 WEB_DIRECTORY = "./web"
 
@@ -142,14 +142,21 @@ class SaveGLBSnapshot(IO.ComfyNode):
                                 tooltip="Camera of the node's viewport, filled in automatically by its UI "
                                         "(hidden). Drives the camera_info output; when empty a default "
                                         "isometric camera fitted to the mesh is used."),
+                IO.Splat.Input("splat", optional=True,
+                               tooltip="Optional: the splat this mesh was reconstructed from. It is passed "
+                                       "through to the splat output, warped for reverse perspective while "
+                                       "the viewport's Persp slider sits in the negative half (no camera "
+                                       "parameter can express that, so the geometry is warped instead). "
+                                       "Render it with the same camera_info, kept orthographic."),
             ],
-            outputs=[IO.Load3DCamera.Output(display_name="camera_info")],
+            outputs=[IO.Load3DCamera.Output(display_name="camera_info"),
+                     IO.Splat.Output(display_name="splat")],
             hidden=[IO.Hidden.prompt, IO.Hidden.extra_pnginfo],
         )
 
     @classmethod
     def execute(cls, mesh: Types.MESH | Types.File3D, filename_prefix: str,
-                camera_state: str = "") -> IO.NodeOutput:
+                camera_state: str = "", splat=None) -> IO.NodeOutput:
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(
             filename_prefix, folder_paths.get_output_directory())
         results = []
@@ -190,9 +197,16 @@ class SaveGLBSnapshot(IO.ComfyNode):
                          unlit=getattr(mesh, "unlit", False))
                 results.append({"filename": f, "subfolder": subfolder, "type": "output"})
                 counter += 1
+        cam_info = _camera_info_from_state(camera_state, mesh)
+        # Reverse perspective cannot be expressed through camera parameters, so when the
+        # viewport's slider is negative the splat geometry itself is warped instead. Only
+        # done when a splat is actually wired in and the slider asks for it - the warp is
+        # an eigh over every gaussian, not something to run on every save.
+        splat_out = warp_splat_reverse_perspective(
+            splat, cam_info, float(cam_info.get("reversePerspective", 0.0) or 0.0)
+        ) if splat is not None else None
         # Custom ui key so the builtin 3d preview does not attach; our JS widget consumes it.
-        return IO.NodeOutput(_camera_info_from_state(camera_state, mesh),
-                             ui={"snapshot3d": results})
+        return IO.NodeOutput(cam_info, splat_out, ui={"snapshot3d": results})
 
 
 @PromptServer.instance.routes.post("/save3d_snapshot/save_png")
@@ -223,7 +237,7 @@ async def save3d_snapshot_save_png(request):
 class Save3DSnapshotExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[IO.ComfyNode]]:
-        return [SaveGLBSnapshot, SplatReversePerspective]
+        return [SaveGLBSnapshot]
 
 
 async def comfy_entrypoint() -> Save3DSnapshotExtension:
