@@ -386,6 +386,8 @@ class SnapshotViewer {
             new THREE.SphereGeometry(0.93, 24, 18),
             new THREE.MeshBasicMaterial({ color: 0x1e1e1e })));
 
+        this.gizmoRings = [];
+        this.gizmoPickers = [];
         const ring = (axis, name, base, active, orient) => {
             const m = new THREE.Mesh(
                 new THREE.TorusGeometry(1, 0.055, 8, 96),
@@ -393,15 +395,23 @@ class SnapshotViewer {
             orient(m);                       // a torus lies in XY, i.e. its axis is +Z
             m.userData = { axis, name, base, active };
             this.gizmoScene.add(m);
-            return m;
+            this.gizmoRings.push(m);
+            // Invisible, fatter twin used only for picking: gives the thin ribbon a
+            // comfortable grab area. Invisible objects are skipped when rendering but are
+            // still hit by the raycaster.
+            const pick = new THREE.Mesh(
+                new THREE.TorusGeometry(1, 0.14, 6, 64), new THREE.MeshBasicMaterial());
+            orient(pick);
+            pick.visible = false;
+            pick.userData = { ring: m, axis };
+            this.gizmoScene.add(pick);
+            this.gizmoPickers.push(pick);
         };
-        this.gizmoRings = [
-            ring(new THREE.Vector3(1, 0, 0), "X", 0x8f3540, 0xff6b78,
-                (m) => { m.rotation.y = Math.PI / 2; }),
-            ring(new THREE.Vector3(0, 1, 0), "Y", 0x4d8a36, 0x9ff06a,
-                (m) => { m.rotation.x = Math.PI / 2; }),
-            ring(new THREE.Vector3(0, 0, 1), "Z", 0x36699e, 0x6fb6ff, () => {}),
-        ];
+        ring(new THREE.Vector3(1, 0, 0), "X", 0x8f3540, 0xff6b78,
+            (m) => { m.rotation.y = Math.PI / 2; });
+        ring(new THREE.Vector3(0, 1, 0), "Y", 0x4d8a36, 0x9ff06a,
+            (m) => { m.rotation.x = Math.PI / 2; });
+        ring(new THREE.Vector3(0, 0, 1), "Z", 0x36699e, 0x6fb6ff, () => {});
         this.gizmoHover = null;
     }
 
@@ -419,27 +429,43 @@ class SnapshotViewer {
 
     // Ribbon under the pointer, or null.
     gizmoRingAt(e) {
-        if (!this.gizmoRings) return null;
+        if (!this.gizmoPickers) return null;
         const ndc = this.gizmoNDC(e);
         if (!ndc) return null;
         this.syncGizmoCamera();
         this.raycaster.setFromCamera(ndc, this.gizmoCam);
-        return this.raycaster.intersectObjects(this.gizmoRings, false)[0] || null;
+        const view = this.gizmoCam.position.clone().normalize();   // core sits at the origin
+        for (const h of this.raycaster.intersectObjects(this.gizmoPickers, false)) {
+            // Ignore ribbons hidden behind the opaque core, so picking matches what is drawn.
+            const depth = h.point.dot(view);                       // > 0 = camera-facing side
+            if (depth < 0 && h.point.lengthSq() - depth * depth < 0.93 * 0.93) continue;
+            return { ring: h.object.userData.ring, axis: h.object.userData.axis, point: h.point };
+        }
+        return null;
     }
 
     onGizmoHover(e) {
         if (this.gizmoDrag || e.buttons !== 0) return;   // not while orbiting or dragging
-        const hover = this.gizmoRingAt(e)?.object || null;
+        const hover = this.gizmoRingAt(e)?.ring || null;
         if (hover === this.gizmoHover) return;
         this.gizmoHover = hover;
         this.applyGizmoVisuals();
         if (hover) this.setStatus(`drag to rotate around ${hover.userData.name}`);
     }
 
-    // Square region in the bottom-right corner, in CSS pixels (y measured from the bottom,
-    // matching WebGLRenderer.setViewport).
+    // Size of the viewport in layout pixels - the space WebGLRenderer.setViewport works in.
+    viewSize() {
+        const el = this.renderer?.domElement;
+        return {
+            w: Math.max(1, el?.clientWidth || this.root.clientWidth),
+            h: Math.max(1, el?.clientHeight || this.root.clientHeight),
+        };
+    }
+
+    // Square region in the bottom-right corner, in layout pixels (y measured from the
+    // bottom, matching WebGLRenderer.setViewport).
     gizmoRect() {
-        const w = this.root.clientWidth, h = this.root.clientHeight;
+        const { w, h } = this.viewSize();
         const size = Math.max(58, Math.min(104, Math.floor(Math.min(w, h) * 0.22)));
         return { x: w - size - 10, y: 10, size };
     }
@@ -465,18 +491,26 @@ class SnapshotViewer {
         this.renderer.clearDepth();               // gizmo depth-sorts against itself only
         this.renderer.render(this.gizmoScene, this.gizmoCam);
         this.renderer.setScissorTest(false);
-        const w = this.root.clientWidth, h = this.root.clientHeight;
+        const { w, h } = this.viewSize();
         this.renderer.setViewport(0, 0, w, h);    // restore, or the next frame draws cropped
         this.renderer.setScissor(0, 0, w, h);
         this.renderer.autoClear = true;
     }
 
     // Pointer -> normalized coordinates inside the gizmo region, or null if outside.
+    // The graph applies a CSS scale to DOM widgets when the canvas is zoomed, so the
+    // element's bounding rect is in zoomed pixels while the WebGL viewport is in layout
+    // pixels - dividing the scale out is what keeps the hit area on the ribbons.
     gizmoNDC(e) {
-        const rect = this.renderer.domElement.getBoundingClientRect();
+        const el = this.renderer?.domElement;
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        const { w, h } = this.viewSize();
+        const sx = rect.width / w || 1;
+        const sy = rect.height / h || 1;
         const r = this.gizmoRect();
-        const gx = (e.clientX - rect.left) - r.x;
-        const gy = (rect.height - (e.clientY - rect.top)) - r.y;
+        const gx = (e.clientX - rect.left) / sx - r.x;
+        const gy = (h - (e.clientY - rect.top) / sy) - r.y;
         if (gx < 0 || gy < 0 || gx > r.size || gy > r.size) return null;
         return new window.THREE.Vector2((gx / r.size) * 2 - 1, (gy / r.size) * 2 - 1);
     }
@@ -489,7 +523,7 @@ class SnapshotViewer {
         e.stopPropagation();                      // keep OrbitControls out of this drag
 
         const THREE = window.THREE;
-        const axis = hit.object.userData.axis.clone();
+        const axis = hit.axis.clone();
         // Settle the controls and clear any leftover inertia before sampling the start pose:
         // with damping on, residual sphericalDelta keeps decaying for frames afterwards and
         // would add azimuth/polar drift on top of our single-axis rotation.
@@ -511,7 +545,7 @@ class SnapshotViewer {
         t2.normalize();
 
         this.gizmoDrag = {
-            axis, t2, ring: hit.object,
+            axis, t2, ring: hit.ring,
             startX: e.clientX, startY: e.clientY,
             startPos: this.camera.position.clone(),
             startUp: this.camera.up.clone(),
