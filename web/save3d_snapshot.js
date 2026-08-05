@@ -152,6 +152,102 @@ class SnapshotViewer {
             this.applyBackground();
         });
 
+        // --- background image: button + collapsible settings panel -------------------
+        this.bgTexture = null;
+        this.bgFit = "cover";
+        this.bgScale = 1.0;
+        this.bgDim = 1.0;
+        this.bgOffset = { x: 0, y: 0 };
+        this.bgInSnapshot = true;
+
+        const bgImgBtn = mkBtn("Image\u2026", "Backdrop image: view the model on top of your own picture",
+            () => { panel.style.display = panel.style.display === "none" ? "flex" : "none"; });
+
+        const panel = document.createElement("div");
+        panel.style.cssText = "display:none;flex-basis:100%;flex-wrap:wrap;gap:6px;align-items:center;" +
+            "background:#222;border:1px solid #444;border-radius:4px;padding:4px 6px;" +
+            "pointer-events:auto;font-size:10px;color:#bbb;";
+        panel.addEventListener("pointerdown", (e) => e.stopPropagation());
+        bar.appendChild(panel);
+        this.bgPanel = panel;
+
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = "image/*";
+        fileInput.style.display = "none";
+        panel.appendChild(fileInput);
+        fileInput.addEventListener("change", () => {
+            const f = fileInput.files?.[0];
+            if (f) this.loadBackground(f);
+            fileInput.value = "";
+        });
+
+        const pBtn = (label, title, onClick) => {
+            const b = document.createElement("button");
+            b.textContent = label;
+            b.title = title;
+            b.style.cssText = BTN_CSS;
+            b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
+            panel.appendChild(b);
+            return b;
+        };
+        pBtn("Load", "Load an image from this device (session only, not saved in the workflow)",
+            () => fileInput.click());
+        pBtn("Clear", "Remove the backdrop image", () => this.clearBackground());
+
+        const fitSel = document.createElement("select");
+        fitSel.title = "How the image maps to the viewport";
+        fitSel.style.cssText = BTN_CSS;
+        for (const v of ["cover", "contain", "100%"]) {
+            const o = document.createElement("option");
+            o.textContent = v;
+            fitSel.appendChild(o);
+        }
+        fitSel.addEventListener("change", () => { this.bgFit = fitSel.value; });
+        panel.appendChild(fitSel);
+
+        const pSlider = (label, min, max, value, title, onInput) => {
+            const wrap = document.createElement("label");
+            wrap.title = title;
+            wrap.style.cssText = "display:flex;align-items:center;gap:4px;";
+            const span = document.createElement("span");
+            span.textContent = `${label} ${value}%`;
+            span.style.cssText = "min-width:64px;";
+            const s = document.createElement("input");
+            s.type = "range";
+            s.min = String(min);
+            s.max = String(max);
+            s.value = String(value);
+            s.style.cssText = "width:80px;";
+            s.addEventListener("input", () => {
+                span.textContent = `${label} ${s.value}%`;
+                onInput(parseFloat(s.value) / 100);
+            });
+            wrap.appendChild(span);
+            wrap.appendChild(s);
+            panel.appendChild(wrap);
+        };
+        pSlider("Scale", 25, 400, 100, "Image size on top of the chosen fit", (v) => { this.bgScale = v; });
+        pSlider("Dim", 30, 100, 100, "Image brightness/opacity, to keep the model readable",
+            (v) => { this.bgDim = v; if (this.bgMesh) this.bgMesh.material.opacity = v; });
+
+        const snapWrap = document.createElement("label");
+        snapWrap.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
+        snapWrap.title = "On: Save PNG / Open include the backdrop. Off: snapshots stay as before " +
+            "(transparent or dark), the backdrop is only for your eyes.";
+        const snapCb = document.createElement("input");
+        snapCb.type = "checkbox";
+        snapCb.checked = true;
+        snapCb.addEventListener("change", () => { this.bgInSnapshot = snapCb.checked; });
+        snapWrap.appendChild(snapCb);
+        snapWrap.appendChild(document.createTextNode("in snapshot"));
+        panel.appendChild(snapWrap);
+
+        const hint = document.createElement("span");
+        hint.textContent = "Shift+drag moves the image";
+        hint.style.cssText = "opacity:0.6;";
+        panel.appendChild(hint);
+
         const saveBtn = mkBtn("\uD83D\uDCF7 Save PNG", "Save the current view as PNG into the output folder " +
             "and download it to this device", () => this.savePNG(saveBtn));
 
@@ -186,6 +282,16 @@ class SnapshotViewer {
         this.scene = new THREE.Scene();
         this.applyBackground();
 
+        // Backdrop layer: own scene + pixel-space ortho camera, rendered before the model.
+        // Drawing it inside WebGL (rather than as CSS behind the canvas) is what makes it
+        // part of Save PNG / Open captures.
+        this.bgScene = new THREE.Scene();
+        this.bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -10, 10);
+        this.bgMesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(1, 1),
+            new THREE.MeshBasicMaterial({ transparent: true, opacity: 1, depthTest: false, depthWrite: false }));
+        this.bgScene.add(this.bgMesh);
+
         this.scene.add(new THREE.HemisphereLight(0xffffff, 0x555555, 0.9));
         const dir = new THREE.DirectionalLight(0xffffff, 0.9);
         dir.position.set(3, 6, 4);
@@ -203,6 +309,7 @@ class SnapshotViewer {
         // Capture phase on the container: this runs before OrbitControls' own handler on the
         // canvas, so grabbing a gizmo ring does not also start an orbit drag.
         this.root.addEventListener("pointerdown", (e) => this.onGizmoPointerDown(e), true);
+        this.root.addEventListener("pointerdown", (e) => this.onBgPointerDown(e), true);
         this.root.addEventListener("pointermove", (e) => this.onGizmoHover(e));
         this.root.addEventListener("pointerleave", () => {
             if (this.gizmoHover) { this.gizmoHover = null; this.applyGizmoVisuals(); }
@@ -216,18 +323,127 @@ class SnapshotViewer {
             if (this.disposed) return;
             requestAnimationFrame(loop);
             if (!this.gizmoDrag) this.controls?.update();   // frozen while a ring is dragged
-            // OrbitControls and aspect updates rebuild the ortho projection matrix,
-            // wiping the custom reverse-perspective row - reapply it every frame.
-            if (this.reverseParams) this.applyReversePerspective();
-            this.renderer.render(this.scene, this.camera);
-            this.renderGizmo();
+            this.renderFrame(false);
         };
         loop();
     }
 
+    // One place that knows the drawing order: clear -> backdrop image -> model -> gizmo.
+    // forSnapshot skips the gizmo and honours the "in snapshot" checkbox for the backdrop.
+    renderFrame(forSnapshot) {
+        const r = this.renderer;
+        r.autoClear = false;
+        r.setClearColor(0x141414, this.transparentBG ? 0 : 1);
+        r.clear(true, true, true);
+        if (this.bgTexture && (!forSnapshot || this.bgInSnapshot)) {
+            this.updateBgLayout();
+            r.render(this.bgScene, this.bgCam);
+            r.clearDepth();
+        }
+        if (this.reverseParams) this.applyReversePerspective();
+        r.render(this.scene, this.camera);
+        if (!forSnapshot) this.renderGizmo();
+        r.autoClear = true;
+    }
+
+    // Place the backdrop quad in layout pixels for the current fit/scale/offset. Working in
+    // layout px keeps the maths identical during hi-res capture: setSize changes only the
+    // drawing buffer, so the same camera covers it and the backdrop scales uniformly.
+    updateBgLayout() {
+        const img = this.bgTexture?.image;
+        if (!img) return;
+        const { w, h } = this.viewSize();
+        this.bgCam.left = -w / 2;
+        this.bgCam.right = w / 2;
+        this.bgCam.top = h / 2;
+        this.bgCam.bottom = -h / 2;
+        this.bgCam.updateProjectionMatrix();
+        const base = this.bgFit === "cover" ? Math.max(w / img.width, h / img.height)
+            : this.bgFit === "contain" ? Math.min(w / img.width, h / img.height)
+            : 1;
+        const s = base * this.bgScale;
+        this.bgMesh.scale.set(img.width * s, img.height * s, 1);
+        this.bgMesh.position.set(this.bgOffset.x, this.bgOffset.y, 0);
+    }
+
+    loadBackground(file) {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            URL.revokeObjectURL(url);
+            if (this.disposed) return;
+            const THREE = window.THREE;
+            this.bgTexture?.dispose();
+            this.bgTexture = new THREE.Texture(img);
+            this.bgTexture.encoding = THREE.sRGBEncoding;
+            this.bgTexture.minFilter = THREE.LinearFilter;   // NPOT-safe, no mipmaps needed
+            this.bgTexture.generateMipmaps = false;
+            this.bgTexture.needsUpdate = true;
+            this.bgMesh.material.map = this.bgTexture;
+            this.bgMesh.material.opacity = this.bgDim;
+            this.bgMesh.material.needsUpdate = true;
+            this.bgOffset = { x: 0, y: 0 };
+            this.setStatus(`backdrop: ${file.name}`);
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(url);
+            this.setStatus("could not load that image");
+        };
+        img.src = url;
+    }
+
+    clearBackground() {
+        this.bgTexture?.dispose();
+        this.bgTexture = null;
+        this.bgMesh.material.map = null;
+        this.bgMesh.material.needsUpdate = true;
+        this.setStatus("backdrop cleared");
+    }
+
+    // Shift+drag anywhere in the viewport moves the backdrop image. Same pointer-capture
+    // discipline as the gizmo, so a release outside the node always ends the drag.
+    onBgPointerDown(e) {
+        if (!e.shiftKey || e.button !== 0 || !this.bgTexture || this.bgDragState || this.gizmoDrag) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.controls) this.controls.enabled = false;
+        const el = this.renderer.domElement;
+        const rect = el.getBoundingClientRect();
+        const { w, h } = this.viewSize();
+        const d = {
+            pointerId: e.pointerId,
+            lastX: e.clientX, lastY: e.clientY,
+            sx: rect.width / w || 1, sy: rect.height / h || 1,   // graph zoom, as in the gizmo
+            move: (ev) => {
+                if ((ev.buttons & 1) === 0) { d.up(); return; }
+                this.bgOffset.x += (ev.clientX - d.lastX) / d.sx;
+                this.bgOffset.y -= (ev.clientY - d.lastY) / d.sy;   // camera y is up
+                d.lastX = ev.clientX;
+                d.lastY = ev.clientY;
+            },
+            up: () => {
+                window.removeEventListener("pointermove", d.move);
+                window.removeEventListener("pointerup", d.up);
+                window.removeEventListener("pointercancel", d.up);
+                window.removeEventListener("blur", d.up);
+                try { this.root.releasePointerCapture(d.pointerId); } catch { /* fine */ }
+                this.bgDragState = null;
+                if (this.controls) this.controls.enabled = true;
+            },
+        };
+        this.bgDragState = d;
+        try { this.root.setPointerCapture(e.pointerId); } catch { /* not fatal */ }
+        window.addEventListener("pointermove", d.move);
+        window.addEventListener("pointerup", d.up);
+        window.addEventListener("pointercancel", d.up);
+        window.addEventListener("blur", d.up);
+    }
+
     applyBackground() {
-        if (!this.scene) return;
-        this.scene.background = this.transparentBG ? null : new window.THREE.Color(0x141414);
+        // The scene itself never carries a background: the clear colour (and the optional
+        // backdrop image layer) are handled in renderFrame, otherwise scene.background
+        // would paint over the image.
+        if (this.scene) this.scene.background = null;
     }
 
     onResize() {
@@ -805,8 +1021,7 @@ class SnapshotViewer {
         const scale = SNAPSHOT_MAX_DIM / Math.max(w, h);
         this.renderer.setPixelRatio(1);
         this.renderer.setSize(Math.round(w * scale), Math.round(h * scale), false);
-        if (this.reverseParams) this.applyReversePerspective();
-        this.renderer.render(this.scene, this.camera);
+        this.renderFrame(true);
         const dataURL = this.renderer.domElement.toDataURL("image/png");
         this.renderer.setPixelRatio(window.devicePixelRatio || 1);
         this.renderer.setSize(w, h, false);
@@ -872,6 +1087,10 @@ class SnapshotViewer {
     dispose() {
         this.disposed = true;
         this.onGizmoPointerUp();
+        this.bgDragState?.up();
+        this.bgTexture?.dispose();
+        this.bgMesh?.geometry?.dispose();
+        this.bgMesh?.material?.dispose();
         this.gizmoScene?.traverse((o) => {
             o.geometry?.dispose();
             o.material?.dispose();
