@@ -489,8 +489,12 @@ class SnapshotViewer {
             this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
             this.controls.enableDamping = true;
             // Report the camera after every manual orbit/zoom/pan so the node's
-            // camera_info output always matches what the user sees.
+            // camera_info output always matches what the user sees. "end" alone is not
+            // enough: with damping the view keeps settling after release, and a lost
+            // pointerup skips "end" entirely - the debounced "change" listener catches
+            // the true final pose in both cases.
             this.controls.addEventListener("end", () => this.updateCameraState());
+            this.controls.addEventListener("change", () => this.scheduleCameraState());
         }
         this.controls.target.copy(t);
         this.controls.update();
@@ -886,6 +890,13 @@ class SnapshotViewer {
         }
     }
 
+    // Debounced camera serialization: fires 250ms after the camera stops moving, which
+    // covers damping settle and any interaction whose "end" event went missing.
+    scheduleCameraState() {
+        clearTimeout(this._camStateTimer);
+        this._camStateTimer = setTimeout(() => this.updateCameraState(), 250);
+    }
+
     // Serialize the current view into the hidden `camera_state` widget, which the Python
     // side turns into the node's camera_info output (for RenderSplat and friends).
     // Coordinates are three.js world space - exactly what camera_info expects, so no
@@ -894,6 +905,7 @@ class SnapshotViewer {
     // Note: RenderSplat knows perspective and orthographic only, so a negative
     // (reverse-perspective) slider value is exported as orthographic.
     updateCameraState() {
+        clearTimeout(this._camStateTimer);
         const w = this.node.widgets?.find((x) => x.name === "camera_state");
         if (!w || !this.camera || !this.controls) return;
         const THREE = window.THREE;
@@ -907,6 +919,7 @@ class SnapshotViewer {
         const pos = target.clone().addScaledVector(dir, dist);
         const q = this.camera.quaternion;
         const xyz = (v) => ({ x: v.x, y: v.y, z: v.z });
+        const prev = w.value;
         w.value = JSON.stringify({
             position: xyz(pos),
             target: xyz(target),
@@ -921,6 +934,10 @@ class SnapshotViewer {
             // can be restored, including negative (reverse-perspective) values.
             viewer: { yawDeg: this.yawDeg, persp: this.perspFov },
         });
+        // Tell the graph the workflow changed: a silent w.value write is invisible to the
+        // frontend's change tracking, so undo/state snapshots could quietly restore a stale
+        // camera - which then makes the whole downstream chain a cache hit ("stuck" preview).
+        if (w.value !== prev) this.node.graph?.change?.();
     }
 
     // Overwrite the ortho camera's projection so that scale grows linearly with depth
@@ -1101,6 +1118,7 @@ class SnapshotViewer {
 
     dispose() {
         this.disposed = true;
+        clearTimeout(this._camStateTimer);
         this.onGizmoPointerUp();
         this.bgDragState?.up();
         this.bgTexture?.dispose();
