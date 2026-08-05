@@ -164,11 +164,16 @@ class SnapshotViewer {
             () => { panel.style.display = panel.style.display === "none" ? "flex" : "none"; });
 
         const panel = document.createElement("div");
-        panel.style.cssText = "display:none;flex-basis:100%;flex-wrap:wrap;gap:6px;align-items:center;" +
-            "background:#222;border:1px solid #444;border-radius:4px;padding:4px 6px;" +
+        // Lives at the bottom of the viewport, next to the gizmo (which keeps the
+        // bottom-right corner: max-width leaves it clear even on a narrow node). Absolute
+        // overlay on top of the canvas; its own pointerdown/stopPropagation keeps orbit and
+        // gizmo out, and wheel events over it never reach the canvas.
+        panel.style.cssText = "display:none;position:absolute;left:6px;bottom:6px;z-index:2;" +
+            "max-width:calc(100% - 132px);flex-wrap:wrap;gap:6px;align-items:center;" +
+            "background:rgba(34,34,34,0.92);border:1px solid #444;border-radius:4px;padding:4px 6px;" +
             "pointer-events:auto;font-size:10px;color:#bbb;";
         panel.addEventListener("pointerdown", (e) => e.stopPropagation());
-        bar.appendChild(panel);
+        this.root.appendChild(panel);
         this.bgPanel = panel;
 
         const fileInput = document.createElement("input");
