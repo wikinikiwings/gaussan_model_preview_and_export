@@ -152,7 +152,9 @@ class SnapshotViewer {
             this.applyBackground();
         });
 
-        // --- background image: button + collapsible settings panel -------------------
+        // --- background image: bottom-corner button + settings panel -----------------
+        // Deliberately outside the top toolbar (which stays as it always was): the backdrop
+        // is a secondary tool, so its trigger lives at the bottom edge, next to the gizmo.
         this.bgTexture = null;
         this.bgFit = "cover";
         this.bgScale = 1.0;
@@ -160,15 +162,23 @@ class SnapshotViewer {
         this.bgOffset = { x: 0, y: 0 };
         this.bgInSnapshot = true;
 
-        const bgImgBtn = mkBtn("Image\u2026", "Backdrop image: view the model on top of your own picture",
-            () => { panel.style.display = panel.style.display === "none" ? "flex" : "none"; });
+        const bgImgBtn = document.createElement("button");
+        bgImgBtn.textContent = "Image\u2026";
+        bgImgBtn.title = "Backdrop image: view the model on top of your own picture";
+        bgImgBtn.style.cssText = BTN_CSS + "pointer-events:auto;position:absolute;left:6px;bottom:6px;z-index:2;";
+        bgImgBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+        bgImgBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            panel.style.display = panel.style.display === "none" ? "flex" : "none";
+        });
+        this.root.appendChild(bgImgBtn);
 
         const panel = document.createElement("div");
-        // Lives at the bottom of the viewport, next to the gizmo (which keeps the
-        // bottom-right corner: max-width leaves it clear even on a narrow node). Absolute
-        // overlay on top of the canvas; its own pointerdown/stopPropagation keeps orbit and
-        // gizmo out, and wheel events over it never reach the canvas.
-        panel.style.cssText = "display:none;position:absolute;left:6px;bottom:6px;z-index:2;" +
+        // Opens just above its trigger button; max-width leaves the gizmo corner clear
+        // even on a narrow node. Absolute overlay on top of the canvas; its own
+        // pointerdown/stopPropagation keeps orbit and gizmo out, and wheel events over it
+        // never reach the canvas.
+        panel.style.cssText = "display:none;position:absolute;left:6px;bottom:34px;z-index:2;" +
             "max-width:calc(100% - 132px);flex-wrap:wrap;gap:6px;align-items:center;" +
             "background:rgba(34,34,34,0.92);border:1px solid #444;border-radius:4px;padding:4px 6px;" +
             "pointer-events:auto;font-size:10px;color:#bbb;";
