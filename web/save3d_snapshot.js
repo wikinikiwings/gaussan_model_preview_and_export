@@ -545,23 +545,31 @@ class SnapshotViewer {
         t2.normalize();
 
         this.gizmoDrag = {
-            axis, t2, ring: hit.ring,
+            axis, t2, ring: hit.ring, pointerId: e.pointerId,
             startX: e.clientX, startY: e.clientY,
             startPos: this.camera.position.clone(),
             startUp: this.camera.up.clone(),
             target: (this.controls?.target ?? new THREE.Vector3()).clone(),
             move: (ev) => this.onGizmoPointerMove(ev),
-            up: (ev) => this.onGizmoPointerUp(ev),
+            up: () => this.onGizmoPointerUp(),
         };
         this.applyGizmoVisuals();
+        // Capture the pointer: move/up events keep coming to us even when the cursor leaves
+        // the node or the browser window, so the drag can never get stuck "grabbed".
+        try { this.root.setPointerCapture(e.pointerId); } catch { /* not fatal */ }
         window.addEventListener("pointermove", this.gizmoDrag.move);
         window.addEventListener("pointerup", this.gizmoDrag.up);
         window.addEventListener("pointercancel", this.gizmoDrag.up);
+        window.addEventListener("blur", this.gizmoDrag.up);
+        this.root.addEventListener("lostpointercapture", this.gizmoDrag.up);
     }
 
     onGizmoPointerMove(e) {
         const d = this.gizmoDrag;
         if (!d) return;
+        // Missed release (event swallowed outside the window): the button is no longer down,
+        // so end the drag instead of keeping the ribbon grabbed.
+        if ((e.buttons & 1) === 0) { this.onGizmoPointerUp(); return; }
         const THREE = window.THREE;
         const drag = ((e.clientX - d.startX) * d.t2.x + (e.clientY - d.startY) * d.t2.y) * 0.012;
         // The camera has to turn the opposite way for the model to follow the pointer:
@@ -582,6 +590,9 @@ class SnapshotViewer {
         window.removeEventListener("pointermove", d.move);
         window.removeEventListener("pointerup", d.up);
         window.removeEventListener("pointercancel", d.up);
+        window.removeEventListener("blur", d.up);
+        this.root.removeEventListener("lostpointercapture", d.up);
+        try { this.root.releasePointerCapture(d.pointerId); } catch { /* already released */ }
         this.gizmoDrag = null;
         this.gizmoHover = null;
         this.applyGizmoVisuals();
