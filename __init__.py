@@ -61,7 +61,10 @@ def _fallback_camera_info(mesh):
     except Exception:  # noqa: BLE001 - bounds are a convenience, never fatal
         logging.debug("SaveGLBSnapshot: could not derive mesh bounds for the default camera")
     half_h = radius * 1.15
-    dist = half_h / math.tan(math.radians(DEFAULT_FOV / 2))
+    # Same eye-outside-the-model safety as the viewport export: distance is free for an
+    # orthographic camera as long as zoom compensates (halfExtent = dist*tan(fov/2)/zoom).
+    dist = max(half_h / math.tan(math.radians(DEFAULT_FOV / 2)), radius * 4)
+    zoom = dist * math.tan(math.radians(DEFAULT_FOV / 2)) / max(half_h, 1e-9)
     yaw, elev = math.radians(45.0), math.radians(ISO_ELEV_DEG)
     d = [math.cos(elev) * math.sin(yaw), math.sin(elev), math.cos(elev) * math.cos(yaw)]
     return {
@@ -69,7 +72,7 @@ def _fallback_camera_info(mesh):
                      "y": center[1] + d[1] * dist,
                      "z": center[2] + d[2] * dist},
         "target": {"x": center[0], "y": center[1], "z": center[2]},
-        "fov": DEFAULT_FOV, "cameraType": "orthographic", "zoom": 1.0,
+        "fov": DEFAULT_FOV, "cameraType": "orthographic", "zoom": zoom,
     }
 
 

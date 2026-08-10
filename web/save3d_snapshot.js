@@ -915,7 +915,19 @@ class SnapshotViewer {
         dir.normalize();
         const persp = this.perspFov > 0.001;
         const fov = persp ? this.perspFov : 35;
-        const dist = this.currentHalfHeight() / Math.tan(THREE.MathUtils.degToRad(fov / 2));
+        const halfH = this.currentHalfHeight();
+        let dist = halfH / Math.tan(THREE.MathUtils.degToRad(fov / 2));
+        let zoom = 1;
+        if (!persp) {
+            // Keep the exported orthographic eye safely outside the model. When the user
+            // wheels in close, the normalized distance can drop below the model radius,
+            // putting the eye inside the splat cloud - the server-side renderer then culls
+            // everything behind it and the render comes out black. For an orthographic
+            // camera the distance is free as long as zoom compensates:
+            // rendered halfExtent = dist * tan(fov/2) / zoom.
+            dist = Math.max(dist, (this.boundingSphere?.radius ?? 0) * 4);
+            zoom = dist * Math.tan(THREE.MathUtils.degToRad(fov / 2)) / Math.max(halfH, 1e-9);
+        }
         const pos = target.clone().addScaledVector(dir, dist);
         const q = this.camera.quaternion;
         const xyz = (v) => ({ x: v.x, y: v.y, z: v.z });
@@ -926,7 +938,7 @@ class SnapshotViewer {
             quaternion: { x: q.x, y: q.y, z: q.z, w: q.w },
             fov,
             cameraType: persp ? "perspective" : "orthographic",
-            zoom: 1,
+            zoom,
             // Strength of the reverse perspective (negative slider), consumed by the
             // SplatReversePerspective node; RenderSplat ignores this key.
             reversePerspective: this.perspFov < 0 ? -this.perspFov : 0,
