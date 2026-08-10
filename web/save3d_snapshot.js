@@ -932,20 +932,32 @@ class SnapshotViewer {
         const q = this.camera.quaternion;
         const xyz = (v) => ({ x: v.x, y: v.y, z: v.z });
         const prev = w.value;
-        w.value = JSON.stringify({
+        const state = {
             position: xyz(pos),
             target: xyz(target),
-            quaternion: { x: q.x, y: q.y, z: q.z, w: q.w },
             fov,
             cameraType: persp ? "perspective" : "orthographic",
             zoom,
             // Strength of the reverse perspective (negative slider), consumed by the
-            // SplatReversePerspective node; RenderSplat ignores this key.
+            // SplatReversePerspective warp; RenderSplat ignores this key.
             reversePerspective: this.perspFov < 0 ? -this.perspFov : 0,
             // Viewer-only extras (ignored by the Python side) so the exact toolbar state
             // can be restored, including negative (reverse-perspective) values.
             viewer: { yawDeg: this.yawDeg, persp: this.perspFov },
-        });
+        };
+        // The server trusts the quaternion for orientation (position/target only place the
+        // eye), so a quaternion that disagrees with the position->target direction makes it
+        // render empty space - verified: that is the one reliable way to get a black image.
+        // Export the quaternion only while it agrees with the look direction (it carries
+        // the roll); otherwise omit it and the server derives a safe look-at orientation.
+        const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+        if (fwd.dot(dir) < -0.995) {   // dir points target -> eye, forward must oppose it
+            state.quaternion = { x: q.x, y: q.y, z: q.z, w: q.w };
+        } else {
+            console.warn("[save3d_snapshot] camera quaternion disagrees with the look " +
+                "direction; exporting without it (roll dropped). fwd:", fwd, "dir:", dir);
+        }
+        w.value = JSON.stringify(state);
         this.warnIfModelOutOfFrame(halfH);
         // Tell the graph the workflow changed: a silent w.value write is invisible to the
         // frontend's change tracking, so undo/state snapshots could quietly restore a stale

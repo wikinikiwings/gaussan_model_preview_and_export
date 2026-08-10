@@ -103,6 +103,7 @@ def _camera_info_from_state(camera_state: str, mesh):
             if isinstance(q, dict):
                 info["quaternion"] = {"x": float(q.get("x", 0.0)), "y": float(q.get("y", 0.0)),
                                       "z": float(q.get("z", 0.0)), "w": float(q.get("w", 1.0))}
+            logging.info("SaveGLBSnapshot camera_info: %s", json.dumps(info))
             return info
         except Exception:  # noqa: BLE001
             logging.exception("SaveGLBSnapshot: unusable camera_state, using the default isometric camera")
