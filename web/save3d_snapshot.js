@@ -946,10 +946,42 @@ class SnapshotViewer {
             // can be restored, including negative (reverse-perspective) values.
             viewer: { yawDeg: this.yawDeg, persp: this.perspFov },
         });
+        this.warnIfModelOutOfFrame(halfH);
         // Tell the graph the workflow changed: a silent w.value write is invisible to the
         // frontend's change tracking, so undo/state snapshots could quietly restore a stale
         // camera - which then makes the whole downstream chain a cache hit ("stuck" preview).
         if (w.value !== prev) this.node.graph?.change?.();
+    }
+
+    // The one condition that reliably produces black server renders (verified against
+    // RenderSplat directly) is a camera that does not look at the model. It is easy to end
+    // up there without noticing: dolly-zoom parallax slides off-target models across the
+    // frame, the server crops to the smaller image axis (a wide viewport loses its sides in
+    // a square render), and a backdrop image hides the emptiness that used to make it
+    // obvious. Check the bounding sphere against the exported frame and say so.
+    warnIfModelOutOfFrame(halfH) {
+        const s = this.boundingSphere;
+        if (!s || !this.camera) { this._outOfFrame = false; return; }
+        const THREE = window.THREE;
+        this.camera.updateMatrixWorld();
+        const v = s.center.clone().applyMatrix4(this.camera.matrixWorldInverse);
+        const depth = -v.z;                        // camera looks down -Z
+        const persp = this.perspFov > 0.001;
+        // Half-extent of the exported frame at the model's depth, per the smaller image
+        // axis (RenderSplat applies the fov to min(width, height)).
+        const half = persp
+            ? Math.tan(THREE.MathUtils.degToRad(this.perspFov / 2)) * Math.max(depth, 1e-6)
+            : halfH;
+        const out = (persp && depth + s.radius < 0)
+            || Math.abs(v.x) - s.radius > half
+            || Math.abs(v.y) - s.radius > half;
+        if (out && !this._outOfFrame) {
+            this.setStatus("\u26A0 model is out of the exported frame - the server render " +
+                "will be empty. Re-aim or hit Frame.");
+        } else if (!out && this._outOfFrame) {
+            this.setStatus("");
+        }
+        this._outOfFrame = out;
     }
 
     // Overwrite the ortho camera's projection so that scale grows linearly with depth
