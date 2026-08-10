@@ -26,6 +26,7 @@ from comfy_extras.nodes_save_3d import get_mesh_batch_item, save_glb
 from PIL import Image
 from server import PromptServer
 
+from .render_splat_fixed import RenderSplatFixed
 from .reverse_perspective import warp_splat_reverse_perspective
 
 WEB_DIRECTORY = "./web"
@@ -287,7 +288,7 @@ async def save3d_snapshot_save_png(request):
 class Save3DSnapshotExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[IO.ComfyNode]]:
-        return [SaveGLBSnapshot]
+        return [SaveGLBSnapshot, RenderSplatFixed]
 
 
 async def comfy_entrypoint() -> Save3DSnapshotExtension:

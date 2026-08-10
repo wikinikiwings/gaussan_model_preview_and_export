@@ -23,6 +23,23 @@ perspective baked into its geometry and you want to straighten it out.
 
 ---
 
+## Third node: Render Splat (fixed)
+
+`RenderSplatFixed` — the builtin **Render Splat** with one bug fixed: a camera placed
+**inside** the splat (interior scenes, e.g. TripoSplat rooms) no longer returns a pure
+background/black image. The builtin rasterizer's early-out tested `front = trans * slab_a`,
+which is also ~0 for a merely *empty* depth slab; with an inside camera the nearest slabs
+are sparse near-eye floaters, the loop broke before reaching the walls, and the render came
+back black. The fixed check tests the (monotone) transmittance instead.
+
+Implementation: the node does **not** fork the rasterizer — it takes the live source of the
+builtin `_render_gaussian`, applies the one-line fix textually, and swaps it in only around
+its own execute. Everything else (frames, batching, backgrounds, masks, render styles) stays
+byte-identical to the builtin, including future upstream changes outside the patched lines.
+If an upstream update rewrites the patched block, the node logs a warning and transparently
+falls back to unpatched builtin behaviour. Drop-in replacement: same inputs and outputs —
+on pods, just use this node in place of the native one.
+
 ## Install
 
 ```
