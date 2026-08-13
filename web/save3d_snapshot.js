@@ -325,6 +325,10 @@ class SnapshotViewer {
         // canvas, so grabbing a gizmo ring does not also start an orbit drag.
         this.root.addEventListener("pointerdown", (e) => this.onGizmoPointerDown(e), true);
         this.root.addEventListener("pointerdown", (e) => this.onBgPointerDown(e), true);
+        // Bubble phase: runs only when neither the gizmo nor the backdrop drag claimed the
+        // press (they stopPropagation in capture), and toolbar/panel clicks never reach
+        // here for the same reason.
+        this.root.addEventListener("pointerdown", (e) => this.onTumbleDown(e));
         this.root.addEventListener("pointermove", (e) => this.onGizmoHover(e));
         this.root.addEventListener("pointerleave", () => {
             if (this.gizmoHover) { this.gizmoHover = null; this.applyGizmoVisuals(); }
@@ -337,9 +341,9 @@ class SnapshotViewer {
         const loop = () => {
             if (this.disposed) return;
             requestAnimationFrame(loop);
-            if (!this.gizmoDrag) {
+            if (!this.gizmoDrag && !this.tumble) {
                 this.ensureControlsUpSync();
-                this.controls?.update();   // frozen while a ring is dragged
+                this.controls?.update();   // frozen while a ring or the model is dragged
             }
             this.renderFrame(false);
         };
@@ -505,6 +509,11 @@ class SnapshotViewer {
             this.controls?.dispose();
             this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
             this.controls.enableDamping = true;
+            // Left-drag rotation is ours (free trackball, see onTumbleDown): OrbitControls
+            // is a turntable - spherical math around a fixed up axis with hard polar
+            // clamps - which cannot tumble freely, especially once the gizmo has rolled
+            // the camera. The controls keep what they are good at: pan and wheel zoom.
+            this.controls.enableRotate = false;
             // Report the camera after every manual orbit/zoom/pan so the node's
             // camera_info output always matches what the user sees. "end" alone is not
             // enough: with damping the view keeps settling after release, and a lost
@@ -620,6 +629,52 @@ class SnapshotViewer {
             this.applyReversePerspective();
         }
         this.updateCameraState();
+    }
+
+    // ---- free trackball rotation (left drag) -----------------------------------------
+    // Pole-free tumbling: horizontal drag rotates around the camera's current up,
+    // vertical drag around the camera's right. The model follows the pointer. Roll
+    // accumulates naturally over diagonal paths - that is the nature of a trackball;
+    // Frame resets it, the gizmo adjusts it deliberately.
+    onTumbleDown(e) {
+        if (e.button !== 0 || e.shiftKey || this.gizmoDrag || this.bgDragState || this.tumble) return;
+        if (!this.controls || !this.camera) return;
+        const d = {
+            lastX: e.clientX, lastY: e.clientY,
+            move: (ev) => {
+                if ((ev.buttons & 1) === 0) { d.up(); return; }
+                this.applyTumble(ev.clientX - d.lastX, ev.clientY - d.lastY);
+                d.lastX = ev.clientX;
+                d.lastY = ev.clientY;
+            },
+            up: () => {
+                window.removeEventListener("pointermove", d.move);
+                window.removeEventListener("pointerup", d.up);
+                window.removeEventListener("pointercancel", d.up);
+                window.removeEventListener("blur", d.up);
+                this.tumble = null;
+                this.updateCameraState();
+            },
+        };
+        this.tumble = d;
+        window.addEventListener("pointermove", d.move);
+        window.addEventListener("pointerup", d.up);
+        window.addEventListener("pointercancel", d.up);
+        window.addEventListener("blur", d.up);
+    }
+
+    applyTumble(dx, dy) {
+        const THREE = window.THREE;
+        const cam = this.camera;
+        const target = this.controls.target;
+        const s = 0.008; // rad per screen px
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+        const q = new THREE.Quaternion().setFromAxisAngle(cam.up, -dx * s)
+            .multiply(new THREE.Quaternion().setFromAxisAngle(right, -dy * s));
+        cam.position.copy(target).add(cam.position.clone().sub(target).applyQuaternion(q));
+        cam.up.applyQuaternion(q).normalize();
+        cam.lookAt(target);
+        this.scheduleCameraState();
     }
 
     // ---- rotation gizmo -------------------------------------------------------------
@@ -1196,6 +1251,7 @@ class SnapshotViewer {
     dispose() {
         this.disposed = true;
         clearTimeout(this._camStateTimer);
+        this.tumble?.up();
         this.onGizmoPointerUp();
         this.bgDragState?.up();
         this.bgTexture?.dispose();
