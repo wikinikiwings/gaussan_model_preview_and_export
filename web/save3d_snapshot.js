@@ -671,7 +671,11 @@ class SnapshotViewer {
         const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
         const q = new THREE.Quaternion().setFromAxisAngle(cam.up, -dx * s)
             .multiply(new THREE.Quaternion().setFromAxisAngle(right, -dy * s));
-        cam.position.copy(target).add(cam.position.clone().sub(target).applyQuaternion(q));
+        // NB: compute the offset BEFORE touching cam.position - copy(target) runs before
+        // the .add() argument is evaluated, so cloning cam.position inline would clone the
+        // already-overwritten value and collapse the camera onto the target.
+        const offset = cam.position.clone().sub(target).applyQuaternion(q);
+        cam.position.copy(target).add(offset);
         cam.up.applyQuaternion(q).normalize();
         cam.lookAt(target);
         this.scheduleCameraState();
