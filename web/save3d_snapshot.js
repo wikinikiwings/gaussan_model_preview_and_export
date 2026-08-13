@@ -337,10 +337,27 @@ class SnapshotViewer {
         const loop = () => {
             if (this.disposed) return;
             requestAnimationFrame(loop);
-            if (!this.gizmoDrag) this.controls?.update();   // frozen while a ring is dragged
+            if (!this.gizmoDrag) {
+                this.ensureControlsUpSync();
+                this.controls?.update();   // frozen while a ring is dragged
+            }
             this.renderFrame(false);
         };
         loop();
+    }
+
+    // The gizmo rotates camera.up (roll), but OrbitControls captures the up axis once at
+    // construction: afterwards its spherical math orbits a stale axis while lookAt honours
+    // the new up - free orbit turns erratic (mid-drag jumps) and the polar clamps land in
+    // arbitrary places ("cannot rotate past here"). Whenever up has drifted from what the
+    // controls saw, rebuild them around the current axis.
+    ensureControlsUpSync() {
+        if (!this.controls || !this._controlsUp) return;
+        if (this._controlsUp.distanceToSquared(this.camera.up) < 1e-10) return;
+        const target = this.controls.target.clone();
+        this.controls.dispose();
+        this.controls = null;
+        this.switchCamera(this.camera, target);
     }
 
     // One place that knows the drawing order: clear -> backdrop image -> model -> gizmo.
@@ -495,6 +512,10 @@ class SnapshotViewer {
             // the true final pose in both cases.
             this.controls.addEventListener("end", () => this.updateCameraState());
             this.controls.addEventListener("change", () => this.scheduleCameraState());
+            // OrbitControls snapshots camera.up ONCE (inside its update closure) to define
+            // the orbit axis. Remember what it saw, so we can detect when the gizmo has
+            // rolled the camera and the controls need a resync (see ensureControlsUpSync).
+            this._controlsUp = this.camera.up.clone();
         }
         this.controls.target.copy(t);
         this.controls.update();
